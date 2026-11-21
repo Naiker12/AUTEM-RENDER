@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { AutemLoader } from "@/components/brand/autem-loader";
+import { AutemLogo } from "@/components/brand/autem-logo";
 import { BeforeAfterSlider } from "@/components/render/before-after-slider";
 import {
   API_URL,
@@ -589,14 +590,14 @@ export default function RenderPage() {
     : assetFileUrl(sourceAsset.id);
 
   return (
-    <div className="fixed inset-0 z-40 flex h-screen w-screen flex-col overflow-hidden bg-[#16181D]">
-      {/* Cuadrícula arquitectónica sutil edge-to-edge */}
+    <div className="fixed inset-0 z-40 flex h-screen w-screen flex-col overflow-hidden bg-[#0A0A0B]">
+      {/* Cuadrícula arquitectónica sutil del estudio Autem Render */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 opacity-35"
+        className="pointer-events-none absolute inset-0 opacity-45"
         style={{
           backgroundImage:
-            "linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px)",
+            "linear-gradient(to right, rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.035) 1px, transparent 1px)",
           backgroundSize: "48px 48px",
         }}
       />
@@ -617,20 +618,22 @@ export default function RenderPage() {
         onChange={(e) => void handleReferenceUpload(e.target.files)}
       />
 
-      {/* Barra superior flotante edge-to-edge */}
-      <div className="relative z-20 flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] bg-[#0C0C0E]/85 px-5 py-2.5 backdrop-blur-md">
-        <div className="flex items-center gap-2">
+      {/* Barra superior flotante edge-to-edge con identidad Autem Render */}
+      <div className="relative z-20 flex flex-wrap items-center justify-between gap-3 border-b border-[#1E1E22] bg-[#0C0C0E]/95 px-5 py-2.5 backdrop-blur-md">
+        <div className="flex items-center gap-2.5">
           <button
             type="button"
             onClick={() => {
               setSourceAsset(null);
               setActiveJobId(null);
             }}
-            className="flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#27272A] bg-[#16161A] text-[#A1A1AA] transition hover:text-[#F5F5F5]"
+            className="flex h-8 w-8 items-center justify-center rounded-[8px] border border-[#232326] bg-[#111113] text-[#A1A1AA] transition hover:border-[#3A3A40] hover:text-[#F5F5F5]"
             title="Salir a selección de imagen"
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
+
+          <AutemLogo size={26} />
 
           <button
             type="button"
@@ -638,7 +641,7 @@ export default function RenderPage() {
             className={`flex h-8 items-center gap-1.5 rounded-[8px] border px-2.5 text-xs font-medium transition ${
               showLeftPanel
                 ? "border-[#F97316]/50 bg-[#F97316]/15 text-[#FF9F0A]"
-                : "border-[#27272A] bg-[#16161A] text-[#A1A1AA] hover:text-[#F5F5F5]"
+                : "border-[#232326] bg-[#111113] text-[#A1A1AA] hover:text-[#F5F5F5]"
             }`}
             title="Mostrar u ocultar panel de parámetros"
           >
@@ -650,7 +653,7 @@ export default function RenderPage() {
             type="text"
             value={projectName}
             onChange={(e) => setProjectName(e.target.value)}
-            className="rounded-[8px] border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-[#F5F5F5] outline-none focus:border-[#27272A] focus:bg-[#16161A]"
+            className="rounded-[8px] border border-transparent bg-transparent px-2 py-1 text-sm font-semibold text-[#F5F5F5] outline-none focus:border-[#232326] focus:bg-[#111113]"
           />
         </div>
 
@@ -1051,126 +1054,168 @@ export default function RenderPage() {
           </button>
         </aside>
 
-        {/* BARRA FLOTANTE INFERIOR CONVERSACIONAL (DOCK) */}
-        <div className="absolute bottom-4 left-1/2 z-30 w-[94%] max-w-[760px] -translate-x-1/2 space-y-2 rounded-[16px] border border-white/[0.1] bg-[#111114]/94 p-3 shadow-[0_24px_60px_rgba(0,0,0,0.75)] backdrop-blur-xl">
-          {/* Chips de entorno rápido + referencias activas */}
-          <div className="flex flex-wrap items-center gap-1.5">
+        {/* BARRA FLOTANTE INFERIOR CONVERSACIONAL (DOCK 2-TIER LIMPIO) */}
+        <div className="absolute bottom-4 left-1/2 z-30 flex w-[94%] max-w-[780px] -translate-x-1/2 flex-col gap-2">
+          {/* Chips sutiles de entorno rápido flotando arriba del dock */}
+          <div className="flex flex-wrap items-center justify-center gap-1.5">
             {ENV_CHIPS.map((chip) => (
               <button
                 key={chip}
                 type="button"
                 onClick={() => setPrompt((prev) => (prev ? `${prev}, ${chip}` : chip))}
-                className="rounded-full border border-[#27272A] bg-[#18181D] px-2.5 py-1 text-[11px] text-[#D4D4D8] transition hover:border-[#F97316]/60 hover:text-[#FF9F0A]"
+                className="rounded-full border border-white/[0.08] bg-[#111114]/85 px-2.5 py-1 text-[11px] text-[#A1A1AA] backdrop-blur-md transition hover:border-[#F97316]/60 hover:bg-[#18181D] hover:text-[#F5F5F5]"
               >
-                {chip}
+                + {chip}
               </button>
             ))}
-
-            {referenceAssets.map((ref) => (
-              <span
-                key={ref.id}
-                className="inline-flex items-center gap-1 rounded-full border border-[#F97316]/40 bg-[#F97316]/10 py-0.5 pl-1 pr-2 text-[10px] text-[#FF9F0A]"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={assetFileUrl(ref.id)}
-                  alt={ref.filename}
-                  className="h-4 w-4 rounded-full object-cover"
-                />
-                Ref
-                <button
-                  type="button"
-                  onClick={() =>
-                    setReferenceAssets((prev) => prev.filter((item) => item.id !== ref.id))
-                  }
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            ))}
-
-            {selectionRect && (
-              <span className="inline-flex items-center gap-1 rounded-full border border-[#F97316]/40 bg-[#F97316]/15 px-2 py-0.5 text-[10px] font-medium text-[#FF9F0A]">
-                Región activa
-                <button type="button" onClick={() => setSelectionRect(null)}>
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            )}
           </div>
 
-          {/* Fila principal de input + botones de herramientas */}
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !submitting) {
-                  e.preventDefault();
-                  void handleGenerate();
+          {/* Tarjeta principal del compositor: Fila 1 = Input ancho completo | Fila 2 = Herramientas + CTA */}
+          <div className="overflow-hidden rounded-[16px] border border-white/[0.1] bg-[#111114]/95 shadow-[0_24px_64px_rgba(0,0,0,0.8)] backdrop-blur-xl">
+            {/* Badges de contexto activo (Referencias / Región) */}
+            {(referenceAssets.length > 0 || selectionRect) && (
+              <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.06] bg-[#0D0D10]/70 px-3.5 py-2">
+                {referenceAssets.map((ref) => (
+                  <span
+                    key={ref.id}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-[#F97316]/40 bg-[#F97316]/10 py-0.5 pl-1 pr-2 text-[11px] text-[#FF9F0A]"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={assetFileUrl(ref.id)}
+                      alt={ref.filename}
+                      className="h-4 w-4 rounded-full object-cover"
+                    />
+                    <span className="max-w-[110px] truncate">{ref.filename}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setReferenceAssets((prev) => prev.filter((item) => item.id !== ref.id))
+                      }
+                      className="hover:text-white"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+
+                {selectionRect && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full border border-[#F97316]/40 bg-[#F97316]/15 px-2.5 py-0.5 text-[11px] font-medium text-[#FF9F0A]">
+                    Zona seleccionada ({Math.round(selectionRect.w)}% × {Math.round(selectionRect.h)}%)
+                    <button
+                      type="button"
+                      onClick={() => setSelectionRect(null)}
+                      className="hover:text-white"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Fila 1: Input limpio de ancho completo (nunca se corta el texto) */}
+            <div className="px-4 pt-3 pb-2.5">
+              <input
+                type="text"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !submitting) {
+                    e.preventDefault();
+                    void handleGenerate();
+                  }
+                }}
+                placeholder={
+                  studioMode === "video"
+                    ? "Describe el movimiento de cámara o ambiente del video..."
+                    : "Describe los cambios arquitectónicos (ej. fachada en madera cálida, jardín minimalista, atardecer)..."
                 }
-              }}
-              placeholder={
-                studioMode === "video"
-                  ? "Describe el movimiento de cámara o ambiente del video..."
-                  : "Describe cambios (ej. cambiar techo a madera, agregar vegetación, cielo al atardecer)..."
-              }
-              className="min-w-[200px] flex-1 bg-transparent px-2 py-1.5 text-sm text-[#F5F5F5] placeholder-[#71717A] outline-none"
-            />
+                className="w-full bg-transparent text-sm text-[#F5F5F5] placeholder-[#71717A] outline-none"
+              />
+            </div>
 
-            <button
-              type="button"
-              onClick={() => refInputRef.current?.click()}
-              className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[#27272A] bg-[#18181D] px-2.5 text-xs text-[#D4D4D8] transition hover:border-[#F97316]/60 hover:text-[#F5F5F5]"
-              title="Subir imagen de referencia de material o estilo"
-            >
-              <ImagePlus className="h-3.5 w-3.5 text-[#F97316]" />
-              Referencias
-            </button>
+            {/* Fila 2: Barra de herramientas separada a la izquierda + Motor y botón Generar a la derecha */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] bg-[#0D0D10]/60 px-3 py-2">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => refInputRef.current?.click()}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[#27272A] bg-[#16161B] px-2.5 text-xs font-medium text-[#D4D4D8] transition hover:border-[#F97316]/60 hover:text-[#F5F5F5]"
+                  title="Subir imagen de referencia de material o estilo"
+                >
+                  <ImagePlus className="h-3.5 w-3.5 text-[#F97316]" />
+                  Referencias
+                </button>
 
-            <button
-              type="button"
-              onClick={() => setSelectMode((v) => !v)}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2.5 text-xs transition ${
-                selectMode
-                  ? "border-[#F97316] bg-[#F97316]/20 font-medium text-[#FF9F0A]"
-                  : "border-[#27272A] bg-[#18181D] text-[#D4D4D8] hover:border-[#F97316]/60"
-              }`}
-              title="Arrastra sobre la imagen para marcar una zona a editar"
-            >
-              <SquareDashedMousePointer className="h-3.5 w-3.5" />
-              Seleccionar
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectMode((v) => !v)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2.5 text-xs font-medium transition ${
+                    selectMode
+                      ? "border-[#F97316] bg-[#F97316]/20 text-[#FF9F0A]"
+                      : "border-[#27272A] bg-[#16161B] text-[#D4D4D8] hover:border-[#F97316]/60 hover:text-[#F5F5F5]"
+                  }`}
+                  title="Arrastra sobre la imagen para marcar una zona a editar"
+                >
+                  <SquareDashedMousePointer className="h-3.5 w-3.5" />
+                  {selectMode ? "Marcando zona..." : "Seleccionar zona"}
+                </button>
 
-            <button
-              type="button"
-              onClick={toggleVoiceDictation}
-              className={`flex h-8 w-8 items-center justify-center rounded-[8px] border transition ${
-                listening
-                  ? "border-rose-500 bg-rose-500/20 text-rose-300"
-                  : "border-[#27272A] bg-[#18181D] text-[#A1A1AA] hover:text-[#F5F5F5]"
-              }`}
-              title="Dictar cambios por voz"
-            >
-              {listening ? <MicOff className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
-            </button>
+                <button
+                  type="button"
+                  onClick={toggleVoiceDictation}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-[8px] border px-2.5 text-xs font-medium transition ${
+                    listening
+                      ? "border-rose-500 bg-rose-500/20 text-rose-300"
+                      : "border-[#27272A] bg-[#16161B] text-[#A1A1AA] hover:text-[#F5F5F5]"
+                  }`}
+                  title="Dictar cambios por voz"
+                >
+                  {listening ? (
+                    <MicOff className="h-3.5 w-3.5" />
+                  ) : (
+                    <Mic className="h-3.5 w-3.5" />
+                  )}
+                  <span className="hidden sm:inline">{listening ? "Escuchando..." : "Voz"}</span>
+                </button>
+              </div>
 
-            <button
-              type="button"
-              onClick={() => void handleGenerate()}
-              disabled={submitting}
-              className="btn-primary inline-flex h-8 items-center gap-1.5 rounded-[8px] px-3.5 text-xs font-semibold transition disabled:opacity-50"
-            >
-              {submitting ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <>
-                  {studioMode === "video" ? "Animar" : "Generar"}
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </>
-              )}
-            </button>
+              <div className="flex items-center gap-2.5">
+                {activeProviderInfo && (
+                  <span className="hidden font-mono text-[11px] text-[#71717A] sm:inline">
+                    {activeProviderInfo.label.split("(")[0].trim()} ·{" "}
+                    <span
+                      className={
+                        activeProviderInfo.est_cost_usd === 0
+                          ? "text-emerald-400"
+                          : "text-amber-300"
+                      }
+                    >
+                      {activeProviderInfo.est_cost_usd === 0
+                        ? "Gratis"
+                        : `$${(activeProviderInfo.est_cost_usd ?? 0).toFixed(2)}`}
+                    </span>
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => void handleGenerate()}
+                  disabled={submitting}
+                  className="btn-primary inline-flex h-8 items-center gap-1.5 rounded-[8px] px-4 text-xs font-semibold transition disabled:opacity-50"
+                >
+                  {submitting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <>
+                      {studioMode === "video" ? "Animar" : "Generar"}
+                      <ArrowRight className="h-3.5 w-3.5" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -2,7 +2,7 @@
 
 Plataforma de estudio arquitectonico con inteligencia artificial para reconstruccion de Imagen a 3D, Render fotorrealista, Escena 3D orbital y generacion de Video. Disenada con arquitectura multi-proveedor que permite ejecutar modelos de forma 100 % local en tu propia GPU (via ComfyUI y servidores dedicados) o conectarse a motores en la nube con fallback automatico.
 
-![Vista general de Autem Render](docs/autem-render-preview.jpg)
+![Vista general de Autem Render](docs/screenshots/autem-render-studio.png)
 
 ---
 
