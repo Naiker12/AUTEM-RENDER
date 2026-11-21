@@ -1,0 +1,27 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{START_IMAGE}}"
+    }
+  },
+  "2": {
+    "class_type": "WanImageToVideo",
+    "inputs": {
+      "image": ["1", 0],
+      "prompt": "{{PROMPT}}",
+      "seconds": {{SECONDS}},
+      "seed": {{SEED}},
+      "fps": 24
+    }
+  },
+  "3": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["2", 0],
+      "frame_rate": 24,
+      "format": "video/h264-mp4",
+      "filename_prefix": "autem_wan22"
+    }
+  }
+}

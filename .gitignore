@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/tsconfig.tsbuildinfo
+.pnpm-store/
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+
+# Storage / temp / local state
+tmp/
+*.glb
+*.obj
+*.stl
+*.log
+*.db
+*.sqlite
+*.sqlite3
+.agents/
+skills-lock.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

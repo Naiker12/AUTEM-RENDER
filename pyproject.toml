@@ -1,0 +1,48 @@
+[project]
+name = "autem-render-workspace"
+version = "0.1.0"
+description = "Autem Render monorepo workspace"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = [
+    "packages/core",
+    "packages/providers",
+    "apps/api",
+    "apps/worker",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.25.0",
+    "httpx>=0.28.0",
+    "ruff>=0.9.6",
+    "mypy>=1.14.0",
+    "types-PyYAML>=6.0.12",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["autem_core", "autem_providers", "autem_api", "autem_worker"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = [
+    "packages/providers/tests",
+    "apps/api/tests",
+    "apps/worker/tests",
+]

@@ -1,0 +1,24 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "{{IMAGE_NAME}}"
+    }
+  },
+  "2": {
+    "class_type": "Trellis2ImageTo3D",
+    "inputs": {
+      "image": ["1", 0],
+      "seed": {{SEED}},
+      "texture_size": 2048,
+      "simplify_ratio": 0.95
+    }
+  },
+  "3": {
+    "class_type": "SaveGLB",
+    "inputs": {
+      "mesh": ["2", 0],
+      "filename_prefix": "autem_trellis2"
+    }
+  }
+}

@@ -1,0 +1,35 @@
+# Configuración de providers de Autem Render (prioriza GRATIS/local primero, luego APIs de pago)
+# Cambia el orden para definir la estrategia de fallback automático.
+
+image_to_3d:
+  default_order:
+    - comfyui.trellis2
+    - stability.sf3d
+    - tripo.direct
+    - fal.fal-ai/trellis-2
+    - fal.fal-ai/pixal3d
+    - fal.tripo3d/h3.1/image-to-3d
+    - fal.fal-ai/hunyuan-3d/v3.1/pro/image-to-3d
+    - meshy.direct
+    - replicate.firtoz/trellis
+    - local.relief_3d
+
+image:
+  default_order:
+    - comfyui.render
+    - pollinations.flux
+    - hf.flux-schnell
+    - fal.fal-ai/flux/dev/image-to-image
+    - fal.fal-ai/flux-pro/v1.1-ultra
+    - openai.gpt-image-1
+
+upscale:
+  default_order:
+    - fal.fal-ai/clarity-upscaler
+
+video:
+  default_order:
+    - comfyui.wan22
+    - comfyui.ltx25
+    - fal.fal-ai/wan-i2v
+    - fal.fal-ai/ltx-video-v095/multiconditioning
