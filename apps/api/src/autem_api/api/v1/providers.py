@@ -26,6 +26,7 @@ class ProviderOut(BaseModel):
     est_seconds: int
     outputs: list[str]
     notes: str
+    quality_tier: str = "final"
 
 
 @router.get("", response_model=list[ProviderOut])
@@ -54,6 +55,7 @@ def list_providers(
                 est_seconds=info.est_seconds,
                 outputs=list(info.outputs),
                 notes=info.notes,
+                quality_tier=info.quality_tier,
             )
         )
     return results

@@ -5,6 +5,23 @@ from typing import Any
 import numpy as np
 import trimesh
 
+from autem_core.logging import get_logger
+
+logger = get_logger("autem_api.mesh_postprocess")
+
+
+def _simplify_keep_texture(geom: trimesh.Trimesh, face_count: int) -> trimesh.Trimesh:
+    """Decima a `face_count` caras y re-proyecta las UV para NO perder la textura."""
+    simplified = geom.simplify_quadric_decimation(face_count=face_count)
+    vis = geom.visual
+    if getattr(vis, "kind", None) != "texture" or getattr(vis, "uv", None) is None:
+        return simplified
+    closest, _, tri_id = trimesh.proximity.closest_point(geom, simplified.vertices)
+    bary = trimesh.triangles.points_to_barycentric(geom.triangles[tri_id], closest)
+    uv = np.einsum("ij,ijk->ik", bary, vis.uv[geom.faces[tri_id]])
+    simplified.visual = trimesh.visual.TextureVisuals(uv=uv, material=vis.material)
+    return simplified
+
 
 @dataclass
 class MeshPostprocessOutput:
@@ -46,14 +63,18 @@ def postprocess_mesh(
     # Compute mesh statistics, ensure smooth vertex normals, and optionally decimate
     vertex_count = 0
     face_count = 0
+    decimated = False
+    decimation_error: str | None = None
     for name, geom in list(scene.geometry.items()):
         if isinstance(geom, trimesh.Trimesh):
             if face_limit and face_limit > 0 and len(geom.faces) > face_limit:
                 try:
-                    geom = geom.simplify_quadric_decimation(face_limit)
+                    geom = _simplify_keep_texture(geom, face_limit)
                     scene.geometry[name] = geom
-                except Exception:
-                    pass
+                    decimated = True
+                except Exception as exc:  # noqa: BLE001
+                    decimation_error = str(exc)[:200]
+                    logger.warning("postprocess.decimation_failed", error=decimation_error)
             # Force computation of vertex normals so GLB export includes NORMAL accessor
             _ = geom.vertex_normals
             vertex_count += int(len(geom.vertices))
@@ -97,5 +118,7 @@ def postprocess_mesh(
             "dimensions": dimensions,
             "formats": list(exports.keys()),
             "file_size_bytes": glb_size,
+            "decimated": decimated,
+            "decimation_error": decimation_error,
         },
     )

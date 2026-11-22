@@ -60,6 +60,7 @@ class ProviderRegistry:
         req: ImageTo3DRequest,
         on_progress: ProgressCb,
         budget_check: Callable[[float], None] | None = None,
+        allow_preview: bool = True,
     ) -> ImageTo3DResult:
         last_error: Exception | None = None
         attempted = 0
@@ -67,6 +68,16 @@ class ProviderRegistry:
         for pid in order:
             provider = self._items.get(pid)
             if not provider or not provider.is_available():
+                continue
+            is_preview = provider.info.quality_tier == "preview"
+            if is_preview and not allow_preview:
+                attempts.append(
+                    {
+                        "provider_id": pid,
+                        "status": "skipped_preview",
+                        "detail": "Vista previa local desactivada por el usuario",
+                    }
+                )
                 continue
             if budget_check is not None:
                 try:
@@ -84,6 +95,15 @@ class ProviderRegistry:
                 result = provider.run(req, on_progress)
                 attempts.append({"provider_id": pid, "status": "succeeded", "detail": "ok"})
                 result.raw_metadata["fallback_history"] = attempts
+                result.raw_metadata["quality_tier"] = provider.info.quality_tier
+                result.raw_metadata["degraded"] = is_preview
+                if is_preview:
+                    failed = [a for a in attempts if a["status"] == "failed"]
+                    result.raw_metadata["degraded_reason"] = (
+                        failed[0]["detail"][:300]
+                        if failed
+                        else "Ningún motor de IA 3D estaba disponible"
+                    )
                 return result
             except Exception as exc:
                 logger.warning("provider.failed", provider_id=pid, error=str(exc))
@@ -92,6 +112,11 @@ class ProviderRegistry:
         if attempted == 0:
             if last_error is not None:
                 raise last_error
+            if any(a["status"] == "skipped_preview" for a in attempts):
+                raise RuntimeError(
+                    "Ningún motor de IA 3D está disponible y la vista previa local está "
+                    "desactivada. Configura HF_TOKEN o inicia ComfyUI local."
+                )
             raise RuntimeError(
                 "No hay ningún provider 3D activo. Configura FAL_KEY en Configuración "
                 "o inicia ComfyUI local."

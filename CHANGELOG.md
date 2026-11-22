@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.1 — 2026-11-22 (Image-to-3D Quality Pipeline & Honest Preview Fallback)
+
+### Fixed
+- Image-to-3D: el fallback a `local.relief_3d` ahora se marca como vista previa (`degraded`), se muestra claramente en la UI (badge ámbar + alerta con motivo) y nunca se cachea.
+- Decimación de malla (`face_limit`) ahora usa `face_count=` y re-proyecta UV sobre la malla original para conservar la textura, reportando `decimated` y `decimation_error`.
+- Preproceso: flood-fill ya no abre huecos en zonas claras dentro del objeto; soporte `rembg` (`isnet-general-use`) + validación de cobertura + lienzo cuadrado con margen.
+- Relieve local: textura a resolución real (hasta 1024 px) y coordenadas UV alineadas.
+
+### Added
+- `ProviderInfo.quality_tier` (`"final"` | `"preview"`), interruptor `Permitir vista previa` (`allow_preview`), perfiles `fast | balanced | high` para Hunyuan3D-2 y reintento automático ante cuota ZeroGPU.
+
 ## v0.2.0 — 2026-11-22 (Local-First Security, Budget Guard & Open Source Release)
 
 ### Added

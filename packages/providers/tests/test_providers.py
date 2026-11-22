@@ -72,3 +72,61 @@ def test_registry_fallback_skips_unavailable_and_runs_next() -> None:
     )
     assert result.provider_id == "available.2"
     assert Path(result.mesh_path).read_bytes()[:4] == b"glTF"
+
+
+def test_preview_fallback_is_flagged_degraded() -> None:
+    import tempfile
+
+    from PIL import Image
+
+    from autem_providers.image_to_3d.local_relief_provider import LocalRelief3DProvider
+
+    img = Path(tempfile.mkdtemp()) / "in.png"
+    Image.new("RGB", (800, 600), (240, 240, 240)).save(img)
+    reg = ProviderRegistry()
+    reg.register(_TestStub3DProvider("down.1", available=False))
+    reg.register(LocalRelief3DProvider())
+    res = reg.run_with_fallback(
+        ["down.1", "local.relief_3d"], ImageTo3DRequest(image_paths=[str(img)]), lambda *_: None
+    )
+    assert res.raw_metadata["degraded"] is True
+    assert res.raw_metadata["quality_tier"] == "preview"
+
+
+def test_allow_preview_false_raises() -> None:
+    from autem_providers.image_to_3d.local_relief_provider import LocalRelief3DProvider
+
+    reg = ProviderRegistry()
+    reg.register(LocalRelief3DProvider())
+    try:
+        reg.run_with_fallback(
+            ["local.relief_3d"],
+            ImageTo3DRequest(image_paths=["x.png"]),
+            lambda *_: None,
+            allow_preview=False,
+        )
+    except RuntimeError as exc:
+        assert "vista previa" in str(exc).lower()
+    else:
+        raise AssertionError("debió fallar")
+
+
+def test_relief_texture_keeps_resolution() -> None:
+    import tempfile
+
+    import numpy as np
+    import trimesh
+    from PIL import Image
+
+    from autem_providers.image_to_3d.local_relief_provider import _image_to_3d_relief_glb
+
+    arr = np.full((600, 800, 3), 250, np.uint8)
+    arr[100:500, 150:650] = (190, 150, 110)
+    src = Path(tempfile.mkdtemp()) / "in.png"
+    Image.fromarray(arr).save(src)
+    out = Path(tempfile.mkdtemp()) / "o.glb"
+    _image_to_3d_relief_glb(src, out)
+    scene = trimesh.load(str(out), force="scene")
+    geom = next(iter(scene.geometry.values()))
+    tex = geom.visual.material.baseColorTexture
+    assert max(tex.size) > 512

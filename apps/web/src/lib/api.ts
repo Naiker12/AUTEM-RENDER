@@ -232,6 +232,7 @@ export interface ProviderInfo {
   est_seconds: number;
   outputs: string[];
   notes: string;
+  quality_tier?: string;
 }
 
 export interface AssetInfo {

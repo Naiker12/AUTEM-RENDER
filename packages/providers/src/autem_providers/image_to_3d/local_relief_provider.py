@@ -171,8 +171,9 @@ def _image_to_3d_relief_glb(image_path: Path, dest: Path, grid_size: int = 136) 
         nx += 2
         ny += 2
 
-        # High-res texture image for UV mapping (512px)
-        tex_img = padded_rgba.convert("RGB").resize((512, 512), Image.Resampling.LANCZOS)
+        # Textura a resolución real (antes salía de la grilla de ~136 px estirada a 512)
+        tex_img = rgba_cropped.convert("RGB")
+        tex_img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
         gray_img = padded_rgba.convert("L").filter(ImageFilter.GaussianBlur(radius=1.0))
 
     fg_mask = _extract_foreground_mask(padded_rgba)
@@ -230,9 +231,9 @@ def _image_to_3d_relief_glb(image_path: Path, dest: Path, grid_size: int = 136) 
     back_verts = np.stack([xx, yy, z_back], axis=-1).reshape(-1, 3)
     verts = np.vstack([front_verts, back_verts])
 
-    # UV coordinates for both front and back vertices mapped directly to the image texture
-    u_lin = np.linspace(0.0, 1.0, nx, dtype=np.float32)
-    v_lin = np.linspace(1.0, 0.0, ny, dtype=np.float32)
+    # UV coordinates aligned to columns/rows 1..n-2 covering the actual cropped image
+    u_lin = np.clip((np.arange(nx, dtype=np.float32) - 1.0) / max(1.0, nx - 3.0), 0.0, 1.0)
+    v_lin = np.clip(1.0 - (np.arange(ny, dtype=np.float32) - 1.0) / max(1.0, ny - 3.0), 0.0, 1.0)
     uu, vv = np.meshgrid(u_lin, v_lin)
     uv_grid = np.stack([uu, vv], axis=-1).reshape(-1, 2)
     uvs = np.vstack([uv_grid, uv_grid])
@@ -294,12 +295,13 @@ class LocalRelief3DProvider(ImageTo3DProvider):
     def __init__(self) -> None:
         self.info = ProviderInfo(
             id="local.relief_3d",
-            label="Local CPU 3D (Volumétrico · Gratis)",
+            label="Vista previa local (CPU · aproximado)",
             kind=ProviderKind.IMAGE_TO_3D,
             where=Where.LOCAL,
             est_cost_usd=0.0,
             est_seconds=3,
             outputs=("glb", "obj", "stl"),
+            quality_tier="preview",
             notes=(
                 "Aísla el objeto o edificio del fondo y reconstruye un modelo 3D volumétrico "
                 "con textura UV real en CPU a costo $0 (sin GPU ni API key)."

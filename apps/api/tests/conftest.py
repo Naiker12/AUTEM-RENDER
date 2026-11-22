@@ -7,6 +7,7 @@ from autem_api import deps
 
 
 def _clear_dep_caches() -> None:
+    deps.get_provider_registry.cache_clear()
     deps.get_state_store.cache_clear()
     deps.get_asset_store.cache_clear()
     deps.get_cost_service.cache_clear()

@@ -1,11 +1,15 @@
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
+import numpy as np
+from PIL import Image
 
+from autem_core.logging import get_logger
 from autem_providers.base import (
     ImageTo3DProvider,
     ImageTo3DRequest,
@@ -17,6 +21,25 @@ from autem_providers.base import (
 )
 
 HUNYUAN3D_SPACE_HOST = "https://tencent-hunyuan3d-2.hf.space"
+
+logger = get_logger("autem_providers.hf_hunyuan")
+
+QUALITY_PROFILES: dict[str, dict[str, float | int]] = {
+    "fast": {"steps": 25, "guidance": 5.0, "octree": 256, "chunks": 8000},
+    "balanced": {"steps": 30, "guidance": 5.5, "octree": 320, "chunks": 20000},
+    "high": {"steps": 40, "guidance": 5.5, "octree": 380, "chunks": 20000},
+}
+
+
+def _has_real_alpha(path: Path) -> bool:
+    """True si la imagen ya viene recortada (alpha útil): evita doble recorte en el Space."""
+    try:
+        with Image.open(path) as im:
+            if im.mode != "RGBA":
+                return False
+            return float((np.asarray(im.getchannel("A")) < 250).mean()) > 0.02
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _extract_glb_url(payload: list[Any], prefer_index: int = 0) -> str | None:
@@ -110,6 +133,22 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
                         )
         raise RuntimeError("Conexión cerrada antes de recibir la malla 3D de Hunyuan3D-2.")
 
+    def _call_with_retry(
+        self, *args: Any, retries: int = 1, wait_s: float = 8.0, **kwargs: Any
+    ) -> list[Any]:
+        """Reintenta una vez cuando el fallo es de cuota/cola de ZeroGPU."""
+        for attempt in range(retries + 1):
+            try:
+                return self._call_gradio_endpoint(*args, **kwargs)
+            except RuntimeError as exc:
+                msg = str(exc)
+                is_quota = "ZeroGPU" in msg or "cuota" in msg.lower()
+                if attempt >= retries or not is_quota:
+                    raise
+                logger.warning("hunyuan.retry", attempt=attempt + 1, error=msg[:200])
+                time.sleep(wait_s)
+        raise RuntimeError("Hunyuan3D-2: reintentos agotados.")
+
     def run(self, req: ImageTo3DRequest, on_progress: ProgressCb) -> ImageTo3DResult:
         if not req.image_paths:
             raise ValueError("Se requiere al menos una imagen para generar en 3D.")
@@ -119,6 +158,10 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
         seed = req.seed if req.seed is not None else 42
         remove_bg = bool(req.extra.get("remove_bg", True))
         want_texture = bool(req.texture)
+        profile_name = str(req.extra.get("quality", "balanced"))
+        profile = QUALITY_PROFILES.get(profile_name, QUALITY_PROFILES["balanced"])
+        space_rembg = remove_bg and not _has_real_alpha(Path(req.image_paths[0]))
+        texture_error: str | None = None
 
         with httpx.Client(timeout=210.0, follow_redirects=True, headers=headers) as client:
             on_progress(0.10, "Subiendo imagen a Hunyuan3D-2 (Hugging Face ZeroGPU)...")
@@ -157,12 +200,12 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
                 mv_back,
                 mv_left,
                 mv_right,
-                25,  # steps (fast & crisp)
-                5.0,  # guidance_scale
+                int(profile["steps"]),
+                float(profile["guidance"]),
                 int(seed) % 100000,
-                256,  # octree_resolution
-                remove_bg,  # check_box_rembg
-                8000,  # num_chunks
+                int(profile["octree"]),  # octree_resolution
+                space_rembg,  # check_box_rembg
+                int(profile["chunks"]),  # num_chunks
                 False,  # randomize_seed
             ]
 
@@ -171,7 +214,7 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
 
             if want_texture:
                 try:
-                    result_arr = self._call_gradio_endpoint(
+                    result_arr = self._call_with_retry(
                         client,
                         endpoint="generation_all",
                         data=gradio_args,
@@ -180,16 +223,15 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
                         end_pct=0.84,
                         status_msg="Generando geometría 360° y texturas PBR en Hunyuan3D-2",
                     )
-                    # Index 1 is textured GLB, index 0 is untextured mesh
                     glb_url = _extract_glb_url(result_arr, prefer_index=1)
                     used_mode = "pbr_textured"
-                except Exception:
-                    # If full PBR texture painting hits ZeroGPU timeout/quota,
-                    # fall back cleanly to fast neural 360° geometry generation.
+                except Exception as exc:  # noqa: BLE001
+                    texture_error = str(exc)[:300]
+                    logger.warning("hunyuan.texture_failed", error=texture_error)
                     glb_url = None
 
             if not glb_url:
-                result_arr = self._call_gradio_endpoint(
+                result_arr = self._call_with_retry(
                     client,
                     endpoint="shape_generation",
                     data=gradio_args,
@@ -223,5 +265,7 @@ class HFHunyuan3DProvider(ImageTo3DProvider):
                     "space": "tencent/Hunyuan3D-2",
                     "mode": used_mode,
                     "authenticated": bool(hf_token),
+                    "quality_profile": profile_name,
+                    "texture_error": texture_error,
                 },
             )

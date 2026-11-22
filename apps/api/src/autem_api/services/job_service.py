@@ -278,6 +278,9 @@ class JobService:
         cached = self._jobs.get(cached_id)
         if not cached or cached.status != JobStatus.SUCCEEDED:
             return None
+        # Nunca reutilizar vistas previas / resultados degradados (incluye cachés viejas)
+        if cached.params.get("degraded") or cached.provider_id.startswith("local.relief"):
+            return None
         glb_id = cached.output_assets.get("glb")
         if not glb_id:
             return None
@@ -785,7 +788,11 @@ class JobService:
                 extra=extra,
             )
             result = self._registry.run_with_fallback(
-                order, req, on_progress, budget_check=self._cost_service.check_budget
+                order,
+                req,
+                on_progress,
+                budget_check=self._cost_service.check_budget,
+                allow_preview=bool(extra.get("allow_preview", True)),
             )
             self._cost_service.record_cost(result.cost_usd)
             cancel_ev = self._cancel_events.get(job_id)
@@ -820,19 +827,33 @@ class JobService:
                 if current.status != JobStatus.CANCELED:
                     current.status = JobStatus.SUCCEEDED
                     current.progress = 1.0
-                    current.message = "Modelo 3D listo"
+                    meta = result.raw_metadata
+                    degraded = bool(meta.get("degraded", False))
+                    current.message = (
+                        "Vista previa lista (aproximación)" if degraded else "Modelo 3D listo"
+                    )
+                    current.params["quality_tier"] = meta.get("quality_tier", "final")
+                    current.params["degraded"] = degraded
+                    if meta.get("degraded_reason"):
+                        current.params["degraded_reason"] = meta["degraded_reason"]
+                    if meta.get("texture_error"):
+                        current.params["texture_error"] = meta["texture_error"]
                     current.provider_id = result.provider_id
                     current.output_mesh_path = str(post.exports.get("glb", result.mesh_path))
                     current.output_assets = output_assets
                     current.output_asset_ids = output_asset_ids
                     current.mesh_stats = post.stats
                     current.cost_usd = result.cost_usd
-                    if "fallback_history" in result.raw_metadata:
-                        current.params["fallback_history"] = result.raw_metadata["fallback_history"]
+                    if "fallback_history" in meta:
+                        current.params["fallback_history"] = meta["fallback_history"]
                     current.finished_at = datetime.now(UTC)
             self._persist_job(current)
             cache_key = current.params.get("cache_key")
-            if isinstance(cache_key, str) and current.status == JobStatus.SUCCEEDED:
+            if (
+                isinstance(cache_key, str)
+                and current.status == JobStatus.SUCCEEDED
+                and not current.params.get("degraded")
+            ):
                 self._store_cache_entry(cache_key, job_id)
         except Exception as exc:
             logger.error("job.failed", job_id=job_id, error=str(exc))

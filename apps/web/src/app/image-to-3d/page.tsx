@@ -146,6 +146,7 @@ function ImageTo3DWorkspace() {
   const [selectedProvider, setSelectedProvider] = useState<string>("auto");
   const [removeBg, setRemoveBg] = useState<boolean>(true);
   const [pbrTexture, setPbrTexture] = useState<boolean>(true);
+  const [allowPreview, setAllowPreview] = useState<boolean>(true);
   const [polygonLimit, setPolygonLimit] = useState<number>(1000000);
   const [seed, setSeed] = useState<string>("123456789");
 
@@ -310,6 +311,8 @@ function ImageTo3DWorkspace() {
           remove_bg: removeBg,
           pbr: pbrTexture,
           polygon_limit: polygonLimit,
+          allow_preview: allowPreview,
+          quality: "balanced",
         },
       });
       setActiveJob(created);
@@ -921,6 +924,13 @@ function ImageTo3DWorkspace() {
                   <span>Quitar fondo</span>
                   <Switch checked={removeBg} onCheckedChange={setRemoveBg} />
                 </label>
+                <label
+                  className="flex cursor-pointer items-center gap-2.5 text-xs text-muted-foreground"
+                  title="Si la IA 3D falla, permite una vista previa aproximada en CPU"
+                >
+                  <span>Permitir vista previa</span>
+                  <Switch checked={allowPreview} onCheckedChange={setAllowPreview} />
+                </label>
               </CardFooter>
             </Card>
 
@@ -1465,7 +1475,12 @@ function ImageTo3DWorkspace() {
                 <ArrowLeft />
               </Button>
               <h1 className="text-[28px] font-bold tracking-tight text-foreground">Imagen a 3D</h1>
-              {activeJob.status === "succeeded" ? (
+              {activeJob.status === "succeeded" && activeJob.params?.degraded === true ? (
+                <Badge className="h-7 gap-1.5 border border-amber-500/30 bg-amber-500/15 px-3 text-xs text-amber-400">
+                  <AlertTriangle data-icon="inline-start" />
+                  Vista previa (aproximación)
+                </Badge>
+              ) : activeJob.status === "succeeded" ? (
                 <Badge className="h-7 gap-1.5 border border-[#22C55E]/30 bg-[#22C55E]/15 px-3 text-xs text-[#22C55E]">
                   <Check data-icon="inline-start" />
                   Modelo generado
@@ -1488,6 +1503,22 @@ function ImageTo3DWorkspace() {
               </Button>
             )}
           </header>
+
+          {activeJob.status === "succeeded" && activeJob.params?.degraded === true && (
+            <Alert className="border-amber-500/30 bg-amber-500/10">
+              <AlertTriangle className="size-4 text-amber-400" />
+              <AlertTitle>Esto es una aproximación, no una reconstrucción 3D real</AlertTitle>
+              <AlertDescription>
+                El motor de IA 3D no estuvo disponible
+                {(() => {
+                  const reason = activeJob.params?.degraded_reason;
+                  return typeof reason === "string" && reason ? ` (${reason.slice(0, 160)})` : "";
+                })()}
+                . Configura HF_TOKEN en Configuración o inicia ComfyUI local para obtener geometría
+                360° real.
+              </AlertDescription>
+            </Alert>
+          )}
 
           {activeJob.error && <FriendlyErrorAlert error={activeJob.error} />}
 

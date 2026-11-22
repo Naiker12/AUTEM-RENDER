@@ -299,9 +299,58 @@ def test_cost_reservation_prevents_concurrent_overspend() -> None:
     cs.release("job-2")
 
 
-def test_content_hash_cache_returns_instant_zero_cost_hit() -> None:
+class _FinalStub3D:
+    """Provider 'final' (no preview) que escribe un GLB real, para probar la caché."""
+
+    def __init__(self) -> None:
+        from autem_providers.base import ProviderInfo, ProviderKind, Where
+
+        self.info = ProviderInfo(
+            id="test.final_stub",
+            label="Stub final",
+            kind=ProviderKind.IMAGE_TO_3D,
+            where=Where.LOCAL,
+            est_cost_usd=0.0,
+            est_seconds=1,
+            outputs=("glb",),
+        )
+
+    def is_available(self) -> bool:
+        return True
+
+    def run(self, req: object, on_progress: object) -> object:
+        import tempfile
+
+        import trimesh
+
+        from autem_providers.base import ImageTo3DResult
+
+        out = Path(tempfile.mkdtemp()) / "stub.glb"
+        out.write_bytes(trimesh.Scene(trimesh.creation.box()).export(file_type="glb"))
+        return ImageTo3DResult(mesh_path=str(out), provider_id=self.info.id, cost_usd=0.0)
+
+
+def _run_job(client: TestClient, asset_id: str, provider_id: str, seed: int) -> dict[str, object]:
     import time
 
+    created = client.post(
+        "/api/v1/jobs/image-to-3d",
+        json={"asset_ids": [asset_id], "provider_id": provider_id, "seed": seed},
+    )
+    assert created.status_code == 202
+    body: dict[str, object] = created.json()
+    for _ in range(80):
+        if body["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.1)
+        body = client.get(f"/api/v1/jobs/{body['id']}").json()
+    return body
+
+
+def test_content_hash_cache_returns_instant_zero_cost_hit() -> None:
+    from autem_api import deps
+
+    deps.get_provider_registry().register(_FinalStub3D())  # type: ignore[arg-type]
     client = TestClient(create_app())
     up = client.post(
         "/api/v1/assets",
@@ -310,30 +359,69 @@ def test_content_hash_cache_returns_instant_zero_cost_hit() -> None:
     assert up.status_code == 201
     asset_id = up.json()["id"]
 
-    first = client.post(
-        "/api/v1/jobs/image-to-3d",
-        json={"asset_ids": [asset_id], "provider_id": "auto", "seed": 777},
-    )
-    assert first.status_code == 202
-    first_id = first.json()["id"]
-    for _ in range(80):
-        st = client.get(f"/api/v1/jobs/{first_id}").json()
-        if st["status"] in ("succeeded", "failed"):
-            break
-        time.sleep(0.1)
-    assert st["status"] == "succeeded"
+    first = _run_job(client, asset_id, "test.final_stub", 777)
+    assert first["status"] == "succeeded"
 
-    # Second identical request must return an immediate cache hit at $0.00
     second = client.post(
         "/api/v1/jobs/image-to-3d",
-        json={"asset_ids": [asset_id], "provider_id": "auto", "seed": 777},
+        json={"asset_ids": [asset_id], "provider_id": "test.final_stub", "seed": 777},
     )
     assert second.status_code == 202
     body = second.json()
     assert body["status"] == "succeeded"
     assert body["cost_usd"] == 0.0
     assert body["params"].get("cache_hit") is True
-    assert body["output_assets"].get("glb") == st["output_assets"].get("glb")
+    assert body["output_assets"].get("glb") == first["output_assets"].get("glb")  # type: ignore[union-attr]
+
+
+def test_degraded_preview_is_flagged_and_never_cached() -> None:
+    client = TestClient(create_app())
+    up = client.post(
+        "/api/v1/assets",
+        files={"file": ("preview.png", _make_png_bytes(), "image/png")},
+    )
+    asset_id = up.json()["id"]
+
+    first = _run_job(client, asset_id, "auto", 5)
+    assert first["status"] == "succeeded"
+    params = first["params"]
+    assert isinstance(params, dict)
+    assert params["degraded"] is True
+    assert params["quality_tier"] == "preview"
+
+    second = client.post(
+        "/api/v1/jobs/image-to-3d",
+        json={"asset_ids": [asset_id], "provider_id": "auto", "seed": 5},
+    )
+    assert second.json()["params"].get("cache_hit") is not True
+
+
+def test_auto_without_preview_fails_instead_of_faking_3d() -> None:
+    import time
+
+    client = TestClient(create_app())
+    up = client.post(
+        "/api/v1/assets",
+        files={"file": ("nopreview.png", _make_png_bytes(), "image/png")},
+    )
+    asset_id = up.json()["id"]
+
+    created = client.post(
+        "/api/v1/jobs/image-to-3d",
+        json={
+            "asset_ids": [asset_id],
+            "provider_id": "auto",
+            "seed": 9,
+            "extra": {"allow_preview": False},
+        },
+    )
+    body = created.json()
+    for _ in range(80):
+        if body["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.1)
+        body = client.get(f"/api/v1/jobs/{body['id']}").json()
+    assert body["status"] == "failed"
 
 
 def test_server_persisted_projects_crud_and_scene_html_export() -> None:

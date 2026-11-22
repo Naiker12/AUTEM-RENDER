@@ -27,6 +27,7 @@ class ProviderInfo:
     est_seconds: int
     outputs: tuple[str, ...]
     notes: str = ""
+    quality_tier: str = "final"  # "final" | "preview"
 
 
 @dataclass
