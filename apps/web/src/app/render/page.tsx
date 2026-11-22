@@ -25,12 +25,15 @@ import {
   Sun,
   Sunrise,
   Sunset,
+  Trash2,
   Upload,
   X,
 } from "lucide-react";
 import { AutemLoader } from "@/components/brand/autem-loader";
 import { AutemLogo } from "@/components/brand/autem-logo";
 import { BeforeAfterSlider } from "@/components/render/before-after-slider";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
+import { StudioContextMenu, type ContextMenuItem } from "@/components/ui/studio-context-menu";
 import {
   API_URL,
   assetFileUrl,
@@ -38,8 +41,10 @@ import {
   createRenderJob,
   createUpscaleJob,
   createVideoAnimateJob,
+  deleteAsset,
   fetchAssets,
   fetchProviders,
+  peekApiCache,
   uploadImageAsset,
   type AssetInfo,
   type JobRecord,
@@ -88,8 +93,12 @@ export default function RenderPage() {
   const refInputRef = useRef<HTMLInputElement | null>(null);
   const imageWrapRef = useRef<HTMLDivElement | null>(null);
 
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [libraryAssets, setLibraryAssets] = useState<AssetInfo[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>(
+    () => peekApiCache<ProviderInfo[]>("/api/v1/providers?kind=render") ?? []
+  );
+  const [libraryAssets, setLibraryAssets] = useState<AssetInfo[]>(
+    () => peekApiCache<AssetInfo[]>("/api/v1/assets?kind=image") ?? []
+  );
   const [showLibrary, setShowLibrary] = useState(false);
 
   const [projectName, setProjectName] = useState("Proyecto Exterior");
@@ -130,6 +139,15 @@ export default function RenderPage() {
   const [submitting, setSubmitting] = useState(false);
   const [upscaling, setUpscaling] = useState(false);
 
+  // Context menu & delete dialog
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    asset: AssetInfo;
+  } | null>(null);
+  const [assetPendingDelete, setAssetPendingDelete] = useState<AssetInfo | null>(null);
+  const [deletingAsset, setDeletingAsset] = useState(false);
+
   useEffect(() => {
     Promise.all([fetchProviders("render"), fetchAssets("image")])
       .then(([provList, imgs]) => {
@@ -137,12 +155,7 @@ export default function RenderPage() {
         setLibraryAssets(imgs);
       })
       .catch(() => {
-        toast.error({
-          title: "No se pudo conectar con la API",
-          description: `Verifica que FastAPI esté corriendo en ${API_URL}.`,
-          actionLabel: "Configurar",
-          actionHref: "/settings",
-        });
+        // TopBar displays connection status without spamming error toasts on route change
       });
   }, []);
 
@@ -390,6 +403,82 @@ export default function RenderPage() {
   const isJobRunning =
     activeJob !== null && ["queued", "running"].includes(activeJob.status);
 
+  async function handleConfirmDeleteAsset() {
+    if (!assetPendingDelete) return;
+    const target = assetPendingDelete;
+    setDeletingAsset(true);
+    try {
+      await deleteAsset(target.id);
+      setLibraryAssets((prev) => prev.filter((a) => a.id !== target.id));
+      if (sourceAsset?.id === target.id) {
+        setSourceAsset(null);
+        setActiveJobId(null);
+      }
+      setAssetPendingDelete(null);
+      toast.success({
+        title: "Imagen eliminada",
+        description: `${target.filename} se eliminó de tu biblioteca.`,
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar la imagen",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeletingAsset(false);
+    }
+  }
+
+  function openAssetContextMenu(e: React.MouseEvent, asset: AssetInfo) {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, asset });
+  }
+
+  const contextMenuItems: ContextMenuItem[] = contextMenu
+    ? [
+        {
+          id: "replace",
+          label: "Cambiar imagen",
+          icon: <ImageIcon className="size-3.5" />,
+          onSelect: () => fileInputRef.current?.click(),
+        },
+        {
+          id: "download",
+          label: "Descargar imagen",
+          icon: <Download className="size-3.5" />,
+          onSelect: () => {
+            const link = document.createElement("a");
+            link.href = assetFileUrl(contextMenu.asset.id);
+            link.download = contextMenu.asset.filename;
+            link.click();
+          },
+        },
+        ...(sourceAsset && sourceAsset.id === contextMenu.asset.id
+          ? [
+              {
+                id: "detach",
+                label: "Salir a selección de imagen",
+                icon: <X className="size-3.5" />,
+                dividerBefore: true,
+                onSelect: () => {
+                  setSourceAsset(null);
+                  setActiveJobId(null);
+                },
+              },
+            ]
+          : []),
+        {
+          id: "delete",
+          label: "Eliminar imagen...",
+          icon: <Trash2 className="size-3.5" />,
+          danger: true,
+          dividerBefore: !(sourceAsset && sourceAsset.id === contextMenu.asset.id),
+          onSelect: () => setAssetPendingDelete(contextMenu.asset),
+        },
+      ]
+    : [];
+
   async function handleUpscale() {
     const targetId = activeOutputPngId ?? sourceAsset?.id;
     if (!targetId) return;
@@ -564,6 +653,8 @@ export default function RenderPage() {
                       setSourceAsset(asset);
                       setProjectName(asset.filename.replace(/\.[^.]+$/, ""));
                     }}
+                    onContextMenu={(e) => openAssetContextMenu(e, asset)}
+                    title={`${asset.filename} (clic derecho para más opciones)`}
                     className="group overflow-hidden rounded-[8px] border border-[#232326] bg-[#0A0A0B] transition hover:border-[#F97316]"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -578,6 +669,30 @@ export default function RenderPage() {
             )}
           </div>
         )}
+
+        <StudioContextMenu
+          position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+          items={contextMenuItems}
+          onClose={() => setContextMenu(null)}
+        />
+        <ConfirmDeleteDialog
+          open={assetPendingDelete !== null}
+          title="¿Eliminar esta imagen?"
+          description="Se eliminará permanentemente de tu biblioteca y del servidor."
+          itemName={assetPendingDelete?.filename}
+          itemMeta={
+            assetPendingDelete
+              ? `${(assetPendingDelete.size / (1024 * 1024)).toFixed(2)} MB · ${assetPendingDelete.mime.replace("image/", "").toUpperCase()}`
+              : undefined
+          }
+          previewUrl={assetPendingDelete ? assetFileUrl(assetPendingDelete.id) : null}
+          deleting={deletingAsset}
+          confirmLabel="Eliminar del servidor"
+          onClose={() => {
+            if (!deletingAsset) setAssetPendingDelete(null);
+          }}
+          onConfirm={handleConfirmDeleteAsset}
+        />
       </div>
     );
   }
@@ -616,6 +731,36 @@ export default function RenderPage() {
         multiple
         className="hidden"
         onChange={(e) => void handleReferenceUpload(e.target.files)}
+      />
+
+      <StudioContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        items={contextMenuItems}
+        onClose={() => setContextMenu(null)}
+      />
+      <ConfirmDeleteDialog
+        open={assetPendingDelete !== null}
+        title="¿Eliminar esta imagen?"
+        description="Puedes salir a la selección de imagen o eliminarla permanentemente del servidor."
+        itemName={assetPendingDelete?.filename}
+        itemMeta={
+          assetPendingDelete
+            ? `${(assetPendingDelete.size / (1024 * 1024)).toFixed(2)} MB · ${assetPendingDelete.mime.replace("image/", "").toUpperCase()}`
+            : undefined
+        }
+        previewUrl={assetPendingDelete ? assetFileUrl(assetPendingDelete.id) : null}
+        deleting={deletingAsset}
+        secondaryLabel="Solo quitar de aquí"
+        confirmLabel="Eliminar del servidor"
+        onClose={() => {
+          if (!deletingAsset) setAssetPendingDelete(null);
+        }}
+        onSecondaryAction={() => {
+          setSourceAsset(null);
+          setActiveJobId(null);
+          setAssetPendingDelete(null);
+        }}
+        onConfirm={handleConfirmDeleteAsset}
       />
 
       {/* Barra superior flotante edge-to-edge con identidad Autem Render */}
@@ -945,6 +1090,7 @@ export default function RenderPage() {
               onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
+              onContextMenu={(e) => openAssetContextMenu(e, sourceAsset)}
               className={`relative select-none overflow-hidden rounded-[16px] border border-white/[0.08] bg-[#0B0B0E] shadow-[0_30px_80px_rgba(0,0,0,0.65)] ${
                 selectMode ? "cursor-crosshair" : ""
               }`}

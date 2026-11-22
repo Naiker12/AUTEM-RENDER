@@ -113,6 +113,73 @@
   background-position: 0 0, 0 10px, 10px -10px, -10px 0;
 }
 
+@keyframes autem-scan {
+  0%,
+  100% {
+    transform: translateY(-9px);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translateY(11px);
+    opacity: 1;
+  }
+}
+
+@keyframes autem-toast-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes autem-toast-progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes autem-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.autem-skeleton {
+  background: linear-gradient(90deg, #151519 25%, #1f1f25 50%, #151519 75%);
+  background-size: 200% 100%;
+  animation: autem-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes autem-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes autem-dialog-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 nextjs-portal,
 #__next-build-watcher,
 [data-nextjs-toast],

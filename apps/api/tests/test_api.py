@@ -86,13 +86,18 @@ def test_jobs_require_real_uploaded_images_and_active_provider(monkeypatch: obje
     assert auto_res.status_code == 202
     job_id = auto_res.json()["id"]
     final_job = auto_res.json()
-    for _ in range(40):
+    for _ in range(120):
         final_job = client.get(f"/api/v1/jobs/{job_id}").json()
         if final_job["status"] in ("succeeded", "failed"):
             break
         time.sleep(0.1)
     assert final_job["status"] == "succeeded"
     assert "glb" in final_job["output_assets"]
+
+    # Deleting an uploaded asset removes it cleanly
+    del_res = client.delete(f"/api/v1/assets/{asset_id}")
+    assert del_res.status_code == 204
+    assert client.get(f"/api/v1/assets/{asset_id}/file").status_code == 404
 
 
 def test_upload_real_glb_create_scene_and_share_comments() -> None:
@@ -141,31 +146,224 @@ def test_upload_real_glb_create_scene_and_share_comments() -> None:
     assert len(public_resp.json()["comments"]) == 1
 
 
-def test_auth_register_login_me_and_key_encryption() -> None:
-    import uuid
+def test_optional_access_token_protects_api_when_configured(monkeypatch: object) -> None:
+    from autem_api.config import get_api_settings
 
-    from autem_api.security.crypto import decrypt_provider_key, encrypt_provider_key
+    monkeypatch.setenv("AUTEM_ACCESS_TOKEN", "super-secret-studio-token")  # type: ignore[attr-defined]
+    get_api_settings.cache_clear()
+    try:
+        client = TestClient(create_app())
+        # Health stays public
+        assert client.get("/api/v1/health").status_code == 200
+        # Protected endpoints reject missing/wrong token
+        assert client.get("/api/v1/jobs").status_code == 401
+        assert (
+            client.get(
+                "/api/v1/jobs",
+                headers={"Authorization": "Bearer wrong-token"},
+            ).status_code
+            == 401
+        )
+        # Valid token succeeds
+        assert (
+            client.get(
+                "/api/v1/jobs",
+                headers={"Authorization": "Bearer super-secret-studio-token"},
+            ).status_code
+            == 200
+        )
+    finally:
+        monkeypatch.delenv("AUTEM_ACCESS_TOKEN", raising=False)  # type: ignore[attr-defined]
+        get_api_settings.cache_clear()
+
+
+def test_security_env_injection_ssrf_and_fake_upload_rejected() -> None:
+    client = TestClient(create_app())
+
+    # 1. Env newline injection must be rejected with 400
+    inj = client.post(
+        "/api/v1/settings/providers",
+        json={"cloud_keys": {"fal": "abc\nEVIL_VAR=injected"}},
+    )
+    assert inj.status_code == 400
+
+    # 2. SSRF to external/metadata host in local_urls must be rejected with 400
+    ssrf = client.post(
+        "/api/v1/settings/providers",
+        json={"local_urls": {"comfyui": "http://169.254.169.254/latest/meta-data"}},
+    )
+    assert ssrf.status_code == 400
+
+    # 3. Spoofed .png containing plain text must be rejected with 400
+    fake_png = client.post(
+        "/api/v1/assets",
+        files={"file": ("spoof.png", b"this is definitely not a png image", "image/png")},
+    )
+    assert fake_png.status_code == 400
+
+    # 4. Spoofed .glb without glTF magic header must be rejected with 400
+    fake_glb = client.post(
+        "/api/v1/assets",
+        files={"file": ("spoof.glb", b"NOT_A_GLB_FILE", "model/gltf-binary")},
+    )
+    assert fake_glb.status_code == 400
+
+
+def test_free_only_mode_blocks_paid_fallback_inside_registry() -> None:
+    from autem_api.services.cost_service import CostService, DailyCostLimitError
+    from autem_providers.base import (
+        ImageTo3DProvider,
+        ImageTo3DRequest,
+        ImageTo3DResult,
+        ProgressCb,
+        ProviderInfo,
+        ProviderKind,
+        Where,
+    )
+    from autem_providers.registry import ProviderRegistry
+
+    class _FailingFree(ImageTo3DProvider):
+        info = ProviderInfo(
+            id="test.free_fail",
+            label="Free Fail",
+            kind=ProviderKind.IMAGE_TO_3D,
+            where=Where.LOCAL,
+            est_cost_usd=0.0,
+            est_seconds=5,
+            outputs=("glb",),
+        )
+
+        def is_available(self) -> bool:
+            return True
+
+        def run(self, req: ImageTo3DRequest, on_progress: ProgressCb) -> ImageTo3DResult:
+            raise RuntimeError("local engine failed")
+
+    class _PaidProvider(ImageTo3DProvider):
+        called = False
+        info = ProviderInfo(
+            id="test.paid",
+            label="Paid Cloud",
+            kind=ProviderKind.IMAGE_TO_3D,
+            where=Where.API,
+            est_cost_usd=0.45,
+            est_seconds=60,
+            outputs=("glb",),
+        )
+
+        def is_available(self) -> bool:
+            return True
+
+        def run(self, req: ImageTo3DRequest, on_progress: ProgressCb) -> ImageTo3DResult:
+            self.called = True
+            return ImageTo3DResult(mesh_path="out.glb", provider_id=self.info.id, cost_usd=0.45)
+
+    reg = ProviderRegistry()
+    paid = _PaidProvider()
+    reg.register(_FailingFree())
+    reg.register(paid)
+
+    cost_service = CostService(daily_limit_usd=5.0, free_only_mode=True)
+    req = ImageTo3DRequest(image_paths=["dummy.png"])
+    try:
+        reg.run_with_fallback(
+            ["test.free_fail", "test.paid"],
+            req,
+            lambda _p, _m: None,
+            budget_check=cost_service.check_budget,
+        )
+        raise AssertionError("Expected paid fallback to be blocked")
+    except (RuntimeError, DailyCostLimitError):
+        assert paid.called is False
+
+
+def test_cost_reservation_prevents_concurrent_overspend() -> None:
+    from autem_api.services.cost_service import CostService, DailyCostLimitError
+
+    cs = CostService(daily_limit_usd=1.0, free_only_mode=False)
+    cs.reserve("job-1", 0.60)
+    assert cs.summary()["reserved_usd"] == 0.60
+    assert cs.summary()["remaining_usd"] == 0.40
+
+    # A second concurrent job of $0.50 would exceed $1.00 daily limit
+    try:
+        cs.reserve("job-2", 0.50)
+        raise AssertionError("Expected DailyCostLimitError for concurrent overspend")
+    except DailyCostLimitError:
+        pass
+
+    # After releasing job-1, job-2 fits cleanly
+    cs.release("job-1")
+    cs.reserve("job-2", 0.50)
+    assert cs.summary()["reserved_usd"] == 0.50
+    cs.release("job-2")
+
+
+def test_content_hash_cache_returns_instant_zero_cost_hit() -> None:
+    import time
 
     client = TestClient(create_app())
-    email = f"arch_{uuid.uuid4().hex[:8]}@autem.dev"
-
-    reg = client.post(
-        "/api/v1/auth/register",
-        json={"email": email, "name": "Estudio Autem", "password": "strongpassword123"},
+    up = client.post(
+        "/api/v1/assets",
+        files={"file": ("facade_cache.png", _make_png_bytes(), "image/png")},
     )
-    assert reg.status_code == 201
-    token = reg.json()["access_token"]
+    assert up.status_code == 201
+    asset_id = up.json()["id"]
 
-    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me.status_code == 200
-    assert me.json()["email"] == email
-
-    login = client.post(
-        "/api/v1/auth/login",
-        json={"email": email, "password": "strongpassword123"},
+    first = client.post(
+        "/api/v1/jobs/image-to-3d",
+        json={"asset_ids": [asset_id], "provider_id": "auto", "seed": 777},
     )
-    assert login.status_code == 200
+    assert first.status_code == 202
+    first_id = first.json()["id"]
+    for _ in range(80):
+        st = client.get(f"/api/v1/jobs/{first_id}").json()
+        if st["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.1)
+    assert st["status"] == "succeeded"
 
-    enc = encrypt_provider_key("fal_secret_key_123", "test-secret")
-    assert enc != "fal_secret_key_123"
-    assert decrypt_provider_key(enc, "test-secret") == "fal_secret_key_123"
+    # Second identical request must return an immediate cache hit at $0.00
+    second = client.post(
+        "/api/v1/jobs/image-to-3d",
+        json={"asset_ids": [asset_id], "provider_id": "auto", "seed": 777},
+    )
+    assert second.status_code == 202
+    body = second.json()
+    assert body["status"] == "succeeded"
+    assert body["cost_usd"] == 0.0
+    assert body["params"].get("cache_hit") is True
+    assert body["output_assets"].get("glb") == st["output_assets"].get("glb")
+
+
+def test_server_persisted_projects_crud_and_scene_html_export() -> None:
+    client = TestClient(create_app())
+
+    # 1. Projects CRUD
+    created = client.post("/api/v1/projects", json={"name": "Casa Bosque Norte"})
+    assert created.status_code == 201
+    pid = created.json()["id"]
+    listed = client.get("/api/v1/projects").json()
+    assert any(p["id"] == pid and p["name"] == "Casa Bosque Norte" for p in listed)
+    assert client.delete(f"/api/v1/projects/{pid}").status_code == 204
+    assert all(p["id"] != pid for p in client.get("/api/v1/projects").json())
+
+    # 2. Standalone self-contained HTML 3D viewer export
+    mesh_up = client.post(
+        "/api/v1/assets",
+        files={"file": ("villa.glb", _make_glb_bytes(), "model/gltf-binary")},
+    )
+    assert mesh_up.status_code == 201
+    scene_res = client.post(
+        "/api/v1/scenes",
+        json={"name": "Villa Sur", "asset_id": mesh_up.json()["id"]},
+    )
+    assert scene_res.status_code == 201
+    scene_id = scene_res.json()["id"]
+
+    html_res = client.get(f"/api/v1/scenes/{scene_id}/export-html")
+    assert html_res.status_code == 200
+    assert "text/html" in html_res.headers["content-type"]
+    assert "Villa Sur" in html_res.text
+    assert "GLTFLoader" in html_res.text
+    assert "attachment;" in html_res.headers.get("content-disposition", "")

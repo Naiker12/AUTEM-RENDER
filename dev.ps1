@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 
 Write-Host "Iniciando Autem Render API en http://localhost:8000 ..." -ForegroundColor Cyan
-$api = Start-Process -FilePath "uv" -ArgumentList "run", "uvicorn", "autem_api.main:app", "--reload", "--port", "8000" -PassThru -NoNewWindow
+$api = Start-Process -FilePath "uv" -ArgumentList "run", "uvicorn", "autem_api.main:app", "--reload", "--reload-dir", "apps/api/src", "--reload-dir", "packages/providers/src", "--reload-dir", "packages/core/src", "--port", "8000" -PassThru -NoNewWindow
 
 Write-Host "Iniciando Autem Render Web en http://localhost:3000 ..." -ForegroundColor Cyan
 try {

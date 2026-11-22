@@ -1,7 +1,10 @@
 import asyncio
+import hashlib
+import json
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -85,19 +88,35 @@ class JobService:
         self._cost_service = cost_service
         self._db = db or SqliteStateStore()
         self._jobs: dict[str, JobEntity] = {}
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="autem-job")
         self._lock = threading.Lock()
         self._load_persisted_jobs()
 
     def _load_persisted_jobs(self) -> None:
         rows = self._db.fetchall("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200")
         for r in rows:
+            status_val = JobStatus(str(r["status"]))
+            message_val = str(r["message"])
+            error_val = r.get("error")
+            finished_val = (
+                datetime.fromisoformat(str(r["finished_at"])) if r.get("finished_at") else None
+            )
+            reconciled = False
+            if status_val in (JobStatus.QUEUED, JobStatus.RUNNING):
+                status_val = JobStatus.FAILED
+                message_val = "Interrumpido por reinicio del servidor"
+                error_val = "El proceso se reinició mientras el trabajo estaba en curso."
+                finished_val = datetime.now(UTC)
+                reconciled = True
+
             entity = JobEntity(
                 id=str(r["id"]),
                 kind=JobKind(str(r["kind"])),
                 provider_id=str(r["provider_id"]),
-                status=JobStatus(str(r["status"])),
+                status=status_val,
                 progress=float(r["progress"]),
-                message=str(r["message"]),
+                message=message_val,
                 params=self._db.loads(r.get("params_json"), {}),
                 input_asset_ids=self._db.loads(r.get("input_asset_ids_json"), []),
                 output_asset_ids=self._db.loads(r.get("output_asset_ids_json"), []),
@@ -105,16 +124,16 @@ class JobService:
                 output_mesh_path=r.get("output_mesh_path"),
                 mesh_stats=self._db.loads(r.get("mesh_stats_json"), None),
                 cost_usd=r.get("cost_usd"),
-                error=r.get("error"),
+                error=error_val,
                 created_at=datetime.fromisoformat(str(r["created_at"])),
                 started_at=(
                     datetime.fromisoformat(str(r["started_at"])) if r.get("started_at") else None
                 ),
-                finished_at=(
-                    datetime.fromisoformat(str(r["finished_at"])) if r.get("finished_at") else None
-                ),
+                finished_at=finished_val,
             )
             self._jobs[entity.id] = entity
+            if reconciled:
+                self._persist_job(entity)
 
     def _persist_job(self, job: JobEntity) -> None:
         self._db.execute(
@@ -158,21 +177,47 @@ class JobService:
             raise JobNotFoundError(f"Job {job_id} no encontrado")
         return job
 
-    def _resolve_input_paths(self, asset_ids: list[str], image_paths: list[str]) -> list[str]:
+    def _resolve_input_paths(self, asset_ids: list[str]) -> list[str]:
         resolved: list[str] = []
+        storage_root = self._asset_store.root_dir.resolve()
         for asset_id in asset_ids:
             record = self._asset_store.get(asset_id)
             if record is not None and record.path.exists():
-                resolved.append(str(record.path))
-        for raw_path in image_paths:
-            candidate = Path(raw_path)
-            if candidate.exists() and candidate.is_file():
-                resolved.append(str(candidate))
+                candidate = record.path.resolve()
+                if candidate.is_relative_to(storage_root):
+                    resolved.append(str(candidate))
         if not resolved:
             raise ValueError(
                 "Debes subir al menos una imagen real (PNG, JPEG o WebP) antes de generar."
             )
         return resolved
+
+    def _resolve_order(
+        self,
+        section: str,
+        provider_id: str,
+        category: str = "3d",
+    ) -> list[str]:
+        if provider_id != "auto":
+            return [provider_id]
+        order = list(load_default_order(self._settings.providers_config_path, section))
+        reg: Any = (
+            self._image_registry
+            if category == "image"
+            else self._video_registry
+            if category == "video"
+            else self._registry
+        )
+        # Ensure any registered provider matching this section is included as fallback
+        # even if config/providers.yaml was edited or loaded from a different CWD.
+        for info, _avail in reg.all_info():
+            if section == "upscale" and info.kind.value != "upscale":
+                continue
+            if section == "image" and info.kind.value != "render":
+                continue
+            if info.id not in order:
+                order.append(info.id)
+        return order
 
     def _require_available_provider(
         self,
@@ -195,10 +240,61 @@ class JobService:
             "Configura FAL_KEY en Configuración o inicia ComfyUI local."
         )
 
+    def _compute_3d_cache_key(
+        self,
+        resolved_paths: list[str],
+        provider_id: str,
+        seed: int | None,
+        target_height_m: float | None,
+        extra: dict[str, Any],
+    ) -> str:
+        hasher = hashlib.sha256()
+        hasher.update(
+            json.dumps(
+                {
+                    "kind": "image_to_3d",
+                    "provider_id": provider_id,
+                    "seed": seed,
+                    "target_height_m": target_height_m,
+                    "extra": extra,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        for p_str in resolved_paths:
+            p = Path(p_str)
+            if p.exists() and p.is_file():
+                hasher.update(p.read_bytes())
+        return hasher.hexdigest()
+
+    def _lookup_cached_job(self, cache_key: str) -> JobEntity | None:
+        row = self._db.fetchone(
+            "SELECT job_id FROM content_cache WHERE cache_key = ?",
+            (cache_key,),
+        )
+        if not row:
+            return None
+        cached_id = str(row["job_id"])
+        cached = self._jobs.get(cached_id)
+        if not cached or cached.status != JobStatus.SUCCEEDED:
+            return None
+        glb_id = cached.output_assets.get("glb")
+        if not glb_id:
+            return None
+        rec = self._asset_store.get(glb_id)
+        if not rec or not rec.path.exists():
+            return None
+        return cached
+
+    def _store_cache_entry(self, cache_key: str, job_id: str) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO content_cache (cache_key, job_id, created_at) VALUES (?, ?, ?)",
+            (cache_key, job_id, datetime.now(UTC).isoformat()),
+        )
+
     def create_image_to_3d_job(
         self,
         asset_ids: list[str] | None = None,
-        image_paths: list[str] | None = None,
         provider_id: str = "auto",
         seed: int | None = None,
         target_height_m: float | None = None,
@@ -207,15 +303,49 @@ class JobService:
     ) -> JobEntity:
         job_id = str(uuid.uuid4())
         input_ids = list(asset_ids or [])
-        resolved_paths = self._resolve_input_paths(input_ids, list(image_paths or []))
+        resolved_paths = self._resolve_input_paths(input_ids)
         formats = tuple(export_formats or ["glb", "obj", "stl"])
+        extra_dict = dict(extra or {})
 
-        order = (
-            load_default_order(self._settings.providers_config_path, "image_to_3d")
-            if provider_id == "auto"
-            else [provider_id]
+        # Content-hash cache: return existing identical 3D generation at $0.00
+        cache_key = self._compute_3d_cache_key(
+            resolved_paths, provider_id, seed, target_height_m, extra_dict
         )
-        self._cost_service.check_budget(self._require_available_provider(order))
+        cached = self._lookup_cached_job(cache_key)
+        if cached is not None:
+            now = datetime.now(UTC)
+            hit_job = JobEntity(
+                id=job_id,
+                kind=JobKind.IMAGE_TO_3D,
+                provider_id=cached.provider_id,
+                status=JobStatus.SUCCEEDED,
+                progress=1.0,
+                message="Modelo 3D listo (caché · $0.00)",
+                input_asset_ids=input_ids,
+                output_asset_ids=list(cached.output_asset_ids),
+                output_assets=dict(cached.output_assets),
+                output_mesh_path=cached.output_mesh_path,
+                mesh_stats=dict(cached.mesh_stats) if cached.mesh_stats else None,
+                cost_usd=0.0,
+                params={
+                    "seed": seed,
+                    "target_height_m": target_height_m,
+                    "export_formats": list(formats),
+                    "cache_hit": True,
+                    "cached_from_job_id": cached.id,
+                    **extra_dict,
+                },
+                started_at=now,
+                finished_at=now,
+            )
+            with self._lock:
+                self._jobs[job_id] = hit_job
+            self._persist_job(hit_job)
+            return hit_job
+
+        order = self._resolve_order("image_to_3d", provider_id, category="3d")
+        est_cost = self._require_available_provider(order)
+        self._cost_service.reserve(job_id, est_cost)
 
         job = JobEntity(
             id=job_id,
@@ -231,22 +361,28 @@ class JobService:
                 "target_height_m": target_height_m,
                 "export_formats": list(formats),
                 "order": order,
-                **(extra or {}),
+                "cache_key": cache_key,
+                **extra_dict,
             },
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._cancel_events[job_id] = threading.Event()
         self._persist_job(job)
 
         if self._settings.autem_inline_jobs:
-            thread = threading.Thread(
-                target=self._run_inline_image_to_3d,
-                args=(job_id, order, resolved_paths, seed, target_height_m, formats, extra or {}),
-                daemon=True,
+            self._executor.submit(
+                self._run_inline_image_to_3d,
+                job_id,
+                order,
+                resolved_paths,
+                seed,
+                target_height_m,
+                formats,
+                extra_dict,
             )
-            thread.start()
         else:
-            self._dispatch_to_celery(job_id, order, resolved_paths, seed, extra or {})
+            self._dispatch_to_celery(job_id, order, resolved_paths, seed, extra_dict)
 
         return job
 
@@ -254,7 +390,6 @@ class JobService:
         self,
         provider_ids: list[str],
         asset_ids: list[str] | None = None,
-        image_paths: list[str] | None = None,
         seed: int | None = None,
         target_height_m: float | None = None,
     ) -> list[JobEntity]:
@@ -262,7 +397,6 @@ class JobService:
         for idx, pid in enumerate(provider_ids):
             job = self.create_image_to_3d_job(
                 asset_ids=asset_ids,
-                image_paths=image_paths,
                 provider_id=pid,
                 seed=(seed + idx) if seed is not None else (42 + idx),
                 target_height_m=target_height_m,
@@ -284,11 +418,7 @@ class JobService:
         label: str | None = None,
     ) -> JobEntity:
         job_id = str(uuid.uuid4())
-        order = (
-            load_default_order(self._settings.providers_config_path, "image")
-            if provider_id == "auto"
-            else [provider_id]
-        )
+        order = self._resolve_order("image", provider_id, category="image")
         self._cost_service.check_budget(
             self._require_available_provider(order, category="image")
         )
@@ -331,14 +461,10 @@ class JobService:
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._cancel_events[job_id] = threading.Event()
         self._persist_job(job)
 
-        thread = threading.Thread(
-            target=self._run_inline_image_job,
-            args=(job_id, order, req),
-            daemon=True,
-        )
-        thread.start()
+        self._executor.submit(self._run_inline_image_job, job_id, order, req)
         return job
 
     def create_explore_jobs(
@@ -375,11 +501,7 @@ class JobService:
             raise JobNotFoundError(f"Asset {asset_id} no encontrado para upscale")
 
         job_id = str(uuid.uuid4())
-        order = (
-            load_default_order(self._settings.providers_config_path, "upscale")
-            if provider_id == "auto"
-            else [provider_id]
-        )
+        order = self._resolve_order("upscale", provider_id, category="image")
         self._cost_service.check_budget(
             self._require_available_provider(order, category="image")
         )
@@ -401,14 +523,10 @@ class JobService:
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._cancel_events[job_id] = threading.Event()
         self._persist_job(job)
 
-        thread = threading.Thread(
-            target=self._run_inline_image_job,
-            args=(job_id, order, req),
-            daemon=True,
-        )
-        thread.start()
+        self._executor.submit(self._run_inline_image_job, job_id, order, req)
         return job
 
     def create_video_job(
@@ -423,11 +541,7 @@ class JobService:
         seed: int | None = None,
     ) -> JobEntity:
         job_id = str(uuid.uuid4())
-        order = (
-            load_default_order(self._settings.providers_config_path, "video")
-            if provider_id == "auto"
-            else [provider_id]
-        )
+        order = self._resolve_order("video", provider_id, category="video")
         self._cost_service.check_budget(
             self._require_available_provider(order, category="video")
         )
@@ -484,14 +598,10 @@ class JobService:
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._cancel_events[job_id] = threading.Event()
         self._persist_job(job)
 
-        thread = threading.Thread(
-            target=self._run_inline_video_job,
-            args=(job_id, order, req),
-            daemon=True,
-        )
-        thread.start()
+        self._executor.submit(self._run_inline_video_job, job_id, order, req)
         return job
 
     def _run_inline_video_job(
@@ -515,7 +625,9 @@ class JobService:
                 current.message = message
 
         try:
-            result = self._video_registry.run_with_fallback(order, req, on_progress)
+            result = self._video_registry.run_with_fallback(
+                order, req, on_progress, budget_check=self._cost_service.check_budget
+            )
             self._cost_service.record_cost(result.cost_usd)
 
             asset = self._asset_store.save_file(
@@ -557,7 +669,20 @@ class JobService:
                 job.status = JobStatus.CANCELED
                 job.message = "Cancelado por el usuario"
                 job.finished_at = datetime.now(UTC)
+                ev = self._cancel_events.get(job_id)
+                if ev:
+                    ev.set()
+                self._persist_job(job)
             return job
+
+    def delete_job(self, job_id: str) -> None:
+        with self._lock:
+            existed = self._jobs.pop(job_id, None) is not None
+        if not existed:
+            row = self._db.fetchone("SELECT id FROM jobs WHERE id = ?", (job_id,))
+            if not row:
+                raise JobNotFoundError(f"Job {job_id} no encontrado")
+        self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
 
     def _run_inline_image_job(
         self,
@@ -580,7 +705,9 @@ class JobService:
                 current.message = message
 
         try:
-            result = self._image_registry.run_with_fallback(order, req, on_progress)
+            result = self._image_registry.run_with_fallback(
+                order, req, on_progress, budget_check=self._cost_service.check_budget
+            )
             self._cost_service.record_cost(result.cost_usd)
 
             asset = self._asset_store.save_file(
@@ -657,8 +784,13 @@ class JobService:
                 seed=seed,
                 extra=extra,
             )
-            result = self._registry.run_with_fallback(order, req, on_progress)
+            result = self._registry.run_with_fallback(
+                order, req, on_progress, budget_check=self._cost_service.check_budget
+            )
             self._cost_service.record_cost(result.cost_usd)
+            cancel_ev = self._cancel_events.get(job_id)
+            if cancel_ev and cancel_ev.is_set():
+                return
 
             on_progress(0.92, "Postprocesando malla (escala, ejes y exportación)...")
             post_dir = Path(tempfile.mkdtemp(prefix=f"autem_post_{job_id[:8]}_"))
@@ -695,8 +827,13 @@ class JobService:
                     current.output_asset_ids = output_asset_ids
                     current.mesh_stats = post.stats
                     current.cost_usd = result.cost_usd
+                    if "fallback_history" in result.raw_metadata:
+                        current.params["fallback_history"] = result.raw_metadata["fallback_history"]
                     current.finished_at = datetime.now(UTC)
             self._persist_job(current)
+            cache_key = current.params.get("cache_key")
+            if isinstance(cache_key, str) and current.status == JobStatus.SUCCEEDED:
+                self._store_cache_entry(cache_key, job_id)
         except Exception as exc:
             logger.error("job.failed", job_id=job_id, error=str(exc))
             title, detail, _ = humanize_exception_message(str(exc))
@@ -707,6 +844,8 @@ class JobService:
                 current.message = title
                 current.finished_at = datetime.now(UTC)
             self._persist_job(current)
+        finally:
+            self._cost_service.release(job_id)
 
     def _dispatch_to_celery(
         self,

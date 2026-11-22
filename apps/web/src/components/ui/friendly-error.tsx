@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Sparkles, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, Wrench, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { parseFriendlyError } from "@/lib/api";
 
@@ -25,7 +25,7 @@ export function FriendlyErrorAlert({ error, onDismiss }: FriendlyErrorAlertProps
     >
       <div className="flex items-start gap-3.5">
         <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-[#F59E0B]/30 bg-[#F59E0B]/15 text-[#FFB340]">
-          <Sparkles className="size-4" />
+          <AlertTriangle className="size-4" />
         </div>
 
         <div className="flex flex-col gap-1 pr-6 sm:pr-0">

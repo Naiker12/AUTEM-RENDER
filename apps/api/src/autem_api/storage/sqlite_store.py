@@ -1,15 +1,20 @@
 import json
+import os
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[5]
+DEFAULT_DB_PATH = REPO_ROOT / "data" / "autem_render.db"
+
 
 class SqliteStateStore:
     """Thread-safe SQLite persistence for assets, jobs, scenes, views, and comments."""
 
-    def __init__(self, db_path: Path = Path("tmp/autem_render.db")) -> None:
-        self.db_path = db_path
+    def __init__(self, db_path: Path | None = None) -> None:
+        env_path = os.environ.get("AUTEM_DB_PATH")
+        self.db_path = db_path or (Path(env_path) if env_path else DEFAULT_DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._init_schema()
@@ -23,13 +28,6 @@ class SqliteStateStore:
         with self._lock, self._connect() as conn:
             conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS users (
-                    id TEXT PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
                 CREATE TABLE IF NOT EXISTS assets (
                     id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -83,6 +81,17 @@ class SqliteStateStore:
                     anchor_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS content_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
                 """
             )
 

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { Center, ContactShadows, OrbitControls, useGLTF } from "@react-three/drei";
+import { Center, ContactShadows, Environment, OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { Box, Maximize2, Minimize2, RotateCcw } from "lucide-react";
 import { cn } from "cn";
@@ -26,12 +26,26 @@ interface GlbModelProps {
 
 function GlbModel({ url, shadingMode }: GlbModelProps) {
   const { scene } = useGLTF(url);
-  const cloned = useMemo(() => scene.clone(true), [scene]);
+  const { cloned, fitScale } = useMemo(() => {
+    const copy = scene.clone(true);
+    const box = new THREE.Box3().setFromObject(copy);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+    // Normalize any mesh so its longest dimension fits cleanly in a 2.8m studio inspection box
+    const scale = 2.8 / maxDim;
+    return { cloned: copy, fitScale: scale };
+  }, [scene]);
   const originalMaterials = useRef<Map<string, THREE.Material | THREE.Material[]>>(new Map());
 
   useEffect(() => {
     cloned.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
+        // Guarantee smooth vertex normals even if the GLB was exported without NORMAL attributes
+        if (obj.geometry && !obj.geometry.attributes.normal) {
+          obj.geometry.computeVertexNormals();
+        }
+
         if (!originalMaterials.current.has(obj.uuid)) {
           originalMaterials.current.set(
             obj.uuid,
@@ -42,14 +56,18 @@ function GlbModel({ url, shadingMode }: GlbModelProps) {
         }
 
         const baseMat = originalMaterials.current.get(obj.uuid)!;
+        const hasVertexColors = Boolean(obj.geometry?.attributes?.color);
 
         if (shadingMode === "normals") {
-          obj.material = new THREE.MeshNormalMaterial({ wireframe: false });
+          obj.material = new THREE.MeshNormalMaterial({
+            wireframe: false,
+            flatShading: false,
+          });
         } else if (shadingMode === "solid") {
           obj.material = new THREE.MeshStandardMaterial({
             color: "#d4d4d8",
-            roughness: 0.55,
-            metalness: 0.1,
+            roughness: 0.45,
+            metalness: 0.12,
             wireframe: false,
           });
         } else if (shadingMode === "wireframe") {
@@ -59,9 +77,17 @@ function GlbModel({ url, shadingMode }: GlbModelProps) {
             wireframe: true,
           });
         } else {
-          obj.material = Array.isArray(baseMat)
+          const restored = Array.isArray(baseMat)
             ? baseMat.map((m) => m.clone())
             : baseMat.clone();
+          if (!Array.isArray(restored) && restored instanceof THREE.MeshStandardMaterial) {
+            if (!restored.map && hasVertexColors) {
+              restored.vertexColors = true;
+            }
+            restored.roughness = Math.min(restored.roughness, 0.75);
+            restored.needsUpdate = true;
+          }
+          obj.material = restored;
         }
         obj.castShadow = true;
         obj.receiveShadow = true;
@@ -70,8 +96,10 @@ function GlbModel({ url, shadingMode }: GlbModelProps) {
   }, [cloned, shadingMode]);
 
   return (
-    <Center top>
-      <primitive object={cloned} />
+    <Center>
+      <group scale={fitScale}>
+        <primitive object={cloned} />
+      </group>
     </Center>
   );
 }
@@ -199,31 +227,37 @@ export function ModelViewer3D({
           <>
             <Canvas
               key={`${cameraResetKey}-${cameraSeed}-${glbUrl}`}
-              camera={{ position: [10.5, 6.2, 11.2], fov: 38 }}
+              camera={{ position: [1.8, 1.35, 3.8], fov: 36 }}
               shadows
               dpr={[1, 2]}
+              gl={{
+                antialias: true,
+                toneMapping: THREE.ACESFilmicToneMapping,
+                toneMappingExposure: 1.18,
+              }}
             >
-              <ambientLight intensity={0.85} />
-              <directionalLight position={[12, 16, 10]} intensity={1.65} castShadow />
-              <directionalLight position={[-10, 8, -8]} intensity={0.55} color="#94a3b8" />
-              <pointLight position={[1.5, 3.0, 2.5]} intensity={0.8} color="#ffb347" />
+              <hemisphereLight args={["#ffffff", "#3f3f46", 0.95]} />
+              <ambientLight intensity={0.65} />
+              <directionalLight position={[6, 10, 8]} intensity={2.1} castShadow />
+              <directionalLight position={[-7, 6, -5]} intensity={1.1} color="#dbeafe" />
+              <directionalLight position={[0, 4, -8]} intensity={0.85} color="#fed7aa" />
               <Suspense fallback={null}>
+                <Environment preset="studio" environmentIntensity={0.65} />
                 <GlbModel url={glbUrl} shadingMode={shadingMode} />
                 <ContactShadows
-                  position={[0, -0.02, 0]}
-                  opacity={0.55}
-                  scale={22}
-                  blur={2.2}
-                  far={8}
+                  position={[0, -1.45, 0]}
+                  opacity={0.5}
+                  scale={10}
+                  blur={2.4}
+                  far={6}
                 />
               </Suspense>
               <OrbitControls
                 makeDefault
                 autoRotate={autoRotate}
                 autoRotateSpeed={0.9}
-                minDistance={3}
-                maxDistance={32}
-                maxPolarAngle={Math.PI / 2 - 0.04}
+                minDistance={1.5}
+                maxDistance={14}
               />
             </Canvas>
 

@@ -13,29 +13,39 @@ import { useToastStore, type ToastVariant } from "@/stores/toast-store";
 
 const VARIANT_STYLES: Record<
   ToastVariant,
-  { border: string; bar: string; icon: typeof Info; iconColor: string }
+  {
+    border: string;
+    iconBg: string;
+    bar: string;
+    icon: typeof Info;
+    iconColor: string;
+  }
 > = {
   info: {
-    border: "border-[#2A2A2F]",
-    bar: "bg-sky-400",
+    border: "border-[#2A2A32]",
+    iconBg: "bg-sky-500/12 ring-1 ring-sky-400/25",
+    bar: "bg-sky-400/80",
     icon: Info,
     iconColor: "text-sky-400",
   },
   success: {
-    border: "border-emerald-500/35",
-    bar: "bg-emerald-400",
+    border: "border-emerald-500/30",
+    iconBg: "bg-emerald-500/12 ring-1 ring-emerald-400/30",
+    bar: "bg-emerald-400/85",
     icon: CheckCircle2,
     iconColor: "text-emerald-400",
   },
   warning: {
-    border: "border-[#F97316]/45",
-    bar: "bg-gradient-to-b from-[#FF9F0A] to-[#F97316]",
+    border: "border-[#F97316]/35",
+    iconBg: "bg-[#F97316]/12 ring-1 ring-[#FF9F0A]/30",
+    bar: "bg-gradient-to-r from-[#FF9F0A] to-[#F97316]",
     icon: AlertTriangle,
     iconColor: "text-[#FF9F0A]",
   },
   error: {
-    border: "border-rose-500/45",
-    bar: "bg-rose-500",
+    border: "border-rose-500/35",
+    iconBg: "bg-rose-500/12 ring-1 ring-rose-400/30",
+    bar: "bg-rose-500/85",
     icon: XCircle,
     iconColor: "text-rose-400",
   },
@@ -50,7 +60,7 @@ export function Toaster() {
   return (
     <div
       aria-live="polite"
-      className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-full max-w-[390px] flex-col gap-2.5"
+      className="pointer-events-none fixed bottom-5 right-5 z-50 flex w-[calc(100vw-2.5rem)] max-w-[396px] flex-col gap-2.5"
     >
       {toasts.map((item) => {
         const style = VARIANT_STYLES[item.variant];
@@ -59,19 +69,17 @@ export function Toaster() {
           <div
             key={item.id}
             role="status"
-            className={`pointer-events-auto relative overflow-hidden rounded-[12px] border ${style.border} bg-[#111113]/95 p-3.5 pl-4 shadow-[0_16px_40px_rgba(0,0,0,0.65)] backdrop-blur-xl transition-all`}
+            className={`group pointer-events-auto relative overflow-hidden rounded-[14px] border ${style.border} bg-[#111114]/95 p-3.5 shadow-[0_20px_50px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-xl animate-[autem-toast-in_240ms_cubic-bezier(0.16,1,0.3,1)_forwards]`}
           >
-            {/* Left accent bar */}
-            <span
-              aria-hidden="true"
-              className={`absolute bottom-0 left-0 top-0 w-[3px] ${style.bar}`}
-            />
-
             <div className="flex items-start gap-3">
-              <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${style.iconColor}`} />
+              <div
+                className={`mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg ${style.iconBg}`}
+              >
+                <Icon className={`size-4 ${style.iconColor}`} />
+              </div>
 
               <div className="min-w-0 flex-1 space-y-1">
-                <p className="text-[13px] font-semibold leading-snug text-[#F5F5F5]">
+                <p className="text-[13px] font-semibold tracking-[-0.01em] text-[#F5F5F5]">
                   {item.title}
                 </p>
                 {item.description && (
@@ -83,10 +91,10 @@ export function Toaster() {
                     <Link
                       href={item.actionHref}
                       onClick={() => dismiss(item.id)}
-                      className="inline-flex items-center gap-1.5 rounded-[8px] border border-[#F97316]/40 bg-[#F97316]/15 px-2.5 py-1 text-[11px] font-semibold text-[#FF9F0A] transition hover:bg-[#F97316]/25"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-[#F97316]/35 bg-[#F97316]/12 px-2.5 py-1 text-[11px] font-semibold text-[#FF9F0A] transition hover:border-[#F97316]/60 hover:bg-[#F97316]/20"
                     >
                       {item.actionLabel}
-                      <ArrowRight className="h-3 w-3" />
+                      <ArrowRight className="size-3" />
                     </Link>
                   </div>
                 )}
@@ -95,12 +103,26 @@ export function Toaster() {
               <button
                 type="button"
                 onClick={() => dismiss(item.id)}
-                className="rounded-md p-1 text-[#71717A] transition hover:bg-[#1E1E22] hover:text-[#F5F5F5]"
+                className="rounded-lg p-1 text-[#71717A] transition hover:bg-white/5 hover:text-[#F5F5F5]"
                 aria-label="Cerrar notificación"
               >
-                <X className="h-3.5 w-3.5" />
+                <X className="size-3.5" />
               </button>
             </div>
+
+            {item.durationMs > 0 && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-x-0 bottom-0 h-[2px] bg-white/[0.04]"
+              >
+                <div
+                  className={`h-full w-full origin-left ${style.bar} group-hover:[animation-play-state:paused]`}
+                  style={{
+                    animation: `autem-toast-progress ${item.durationMs}ms linear forwards`,
+                  }}
+                />
+              </div>
+            )}
           </div>
         );
       })}

@@ -7,7 +7,7 @@
     "dev:turbo": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -27,6 +27,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
     "@tailwindcss/postcss": "^4.0.9",
     "@types/node": "^22.13.4",
     "@types/react": "^19.0.8",

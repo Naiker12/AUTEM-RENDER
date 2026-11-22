@@ -3,10 +3,12 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 
 class CoreSettings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(REPO_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -26,7 +28,7 @@ class CoreSettings(BaseSettings):
     fal_key: str | None = None
     comfyui_url: str = "http://localhost:8188"
     daily_cost_limit_usd: float = 5.0
-    providers_config_path: Path = Path("config/providers.yaml")
+    providers_config_path: Path = REPO_ROOT / "config" / "providers.yaml"
 
 
 @lru_cache(maxsize=1)

@@ -5,7 +5,9 @@ import Link from "next/link";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AutemLoader } from "@/components/brand/autem-loader";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { FriendlyErrorAlert } from "@/components/ui/friendly-error";
+import { StudioContextMenu, type ContextMenuItem } from "@/components/ui/studio-context-menu";
 import { toast } from "@/stores/toast-store";
 import {
   AlertTriangle,
@@ -23,6 +25,7 @@ import {
   Layers,
   Play,
   Plus,
+  Trash2,
   Triangle,
   Upload,
   X,
@@ -66,11 +69,14 @@ import {
   cancelJob,
   compareImageTo3DJobs,
   createImageTo3DJob,
+  deleteAsset,
+  deleteJob,
   fetchAssets,
   fetchJob,
   fetchJobs,
   fetchProviders,
   parseFriendlyError,
+  peekApiCache,
   uploadImageAsset,
   type AssetInfo,
   type JobRecord,
@@ -117,9 +123,23 @@ function ImageTo3DWorkspace() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const eventSourcesRef = useRef<EventSource[]>([]);
 
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [loadingProviders, setLoadingProviders] = useState(true);
+  const [providers, setProviders] = useState<ProviderInfo[]>(
+    () => peekApiCache<ProviderInfo[]>("/api/v1/providers?kind=image_to_3d") ?? []
+  );
+  const [loadingProviders, setLoadingProviders] = useState<boolean>(
+    () => peekApiCache("/api/v1/providers?kind=image_to_3d") === undefined
+  );
   const [uploadedAssets, setUploadedAssets] = useState<AssetInfo[]>([]);
+  const [assetPendingDelete, setAssetPendingDelete] = useState<AssetInfo | null>(null);
+  const [deletingAsset, setDeletingAsset] = useState(false);
+  const [jobPendingDelete, setJobPendingDelete] = useState<JobRecord | null>(null);
+  const [deletingJob, setDeletingJob] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    asset?: AssetInfo;
+    job?: JobRecord;
+  } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
 
@@ -135,7 +155,10 @@ function ImageTo3DWorkspace() {
   const [syncCamera, setSyncCamera] = useState(true);
   const [cameraSyncTick, setCameraSyncTick] = useState(0);
 
-  const [history, setHistory] = useState<JobRecord[]>([]);
+  const [history, setHistory] = useState<JobRecord[]>(() => {
+    const cached = peekApiCache<JobRecord[]>("/api/v1/jobs") ?? [];
+    return cached.filter((j) => j.kind === "image_to_3d").slice(0, 5);
+  });
   const [submitting, setSubmitting] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -163,24 +186,9 @@ function ImageTo3DWorkspace() {
             setUploadedAssets([targetAsset]);
           }
         }
-        if (provList.length > 0 && !provList.some((p) => p.available)) {
-          toast.warning({
-            title: "Configura un proveedor antes de empezar",
-            description:
-              "Conecta una clave en Configuración o inicia ComfyUI local para generar modelos 3D.",
-            actionLabel: "Configurar proveedor",
-            actionHref: "/settings",
-          });
-        }
       })
       .catch(() => {
-        if (!mounted) return;
-        toast.error({
-          title: "No se pudo conectar con la API",
-          description: `Verifica que FastAPI esté corriendo en ${API_URL}.`,
-          actionLabel: "Revisar Configuración",
-          actionHref: "/settings",
-        });
+        // TopBar already shows connection status without spamming toasts on tab switches
       })
       .finally(() => {
         if (mounted) setLoadingProviders(false);
@@ -406,14 +414,211 @@ function ImageTo3DWorkspace() {
     }
   }
 
+  async function handleConfirmDeleteAsset() {
+    if (!assetPendingDelete) return;
+    const target = assetPendingDelete;
+    setDeletingAsset(true);
+    try {
+      await deleteAsset(target.id);
+      setUploadedAssets((prev) => prev.filter((a) => a.id !== target.id));
+      setAssetPendingDelete(null);
+      toast.success({
+        title: "Imagen eliminada",
+        description: `${target.filename} se eliminó de tu biblioteca.`,
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar la imagen",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeletingAsset(false);
+    }
+  }
+
+  function handleDetachAssetOnly() {
+    if (!assetPendingDelete) return;
+    const target = assetPendingDelete;
+    setUploadedAssets((prev) => prev.filter((a) => a.id !== target.id));
+    setAssetPendingDelete(null);
+    toast.info({
+      title: "Imagen retirada de la vista",
+      description: "Sigue guardada en tu biblioteca por si la necesitas luego.",
+    });
+  }
+
+  async function handleConfirmDeleteJob() {
+    if (!jobPendingDelete) return;
+    const target = jobPendingDelete;
+    setDeletingJob(true);
+    try {
+      await deleteJob(target.id);
+      setHistory((prev) => prev.filter((item) => item.id !== target.id));
+      if (activeJob?.id === target.id) {
+        setActiveJob(null);
+      }
+      setJobPendingDelete(null);
+      toast.success({
+        title: "Generación eliminada",
+        description: "Se quitó del historial permanentemente.",
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeletingJob(false);
+    }
+  }
+
+  function openImageContextMenu(e: React.MouseEvent, asset: AssetInfo) {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, asset });
+  }
+
+  function openHistoryContextMenu(e: React.MouseEvent, job: JobRecord) {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ x: e.clientX, y: e.clientY, job });
+  }
+
+  const contextMenuItems: ContextMenuItem[] = contextMenu?.asset
+    ? [
+        {
+          id: "replace",
+          label: "Cambiar imagen",
+          icon: <ImageIcon className="size-3.5" />,
+          onSelect: () => fileInputRef.current?.click(),
+        },
+        ...(uploadedAssets.length < 4
+          ? [
+              {
+                id: "add-view",
+                label: `Agregar otra vista (${uploadedAssets.length}/4)`,
+                icon: <Plus className="size-3.5" />,
+                onSelect: () => {
+                  const input = document.createElement("input");
+                  input.type = "file";
+                  input.accept = "image/png,image/jpeg,image/webp";
+                  input.multiple = true;
+                  input.onchange = () => void handleFiles(input.files, false);
+                  input.click();
+                },
+              },
+            ]
+          : []),
+        {
+          id: "download",
+          label: "Descargar imagen",
+          icon: <Download className="size-3.5" />,
+          onSelect: () => {
+            const target = contextMenu.asset;
+            if (!target) return;
+            const link = document.createElement("a");
+            link.href = `${API_URL}${target.url}`;
+            link.download = target.filename;
+            link.click();
+          },
+        },
+        {
+          id: "detach",
+          label: "Quitar de la vista",
+          icon: <X className="size-3.5" />,
+          dividerBefore: true,
+          onSelect: () => {
+            const id = contextMenu.asset?.id;
+            if (!id) return;
+            setUploadedAssets((prev) => prev.filter((a) => a.id !== id));
+            toast.info({
+              title: "Imagen retirada de la vista",
+              description: "Sigue guardada en tu biblioteca.",
+            });
+          },
+        },
+        {
+          id: "delete",
+          label: "Eliminar imagen...",
+          icon: <Trash2 className="size-3.5" />,
+          danger: true,
+          onSelect: () => {
+            if (contextMenu.asset) setAssetPendingDelete(contextMenu.asset);
+          },
+        },
+      ]
+    : contextMenu?.job
+      ? [
+          {
+            id: "open-job",
+            label: "Abrir modelo 3D",
+            icon: <Box className="size-3.5" />,
+            onSelect: () => {
+              if (contextMenu.job) setActiveJob(contextMenu.job);
+            },
+          },
+          ...(contextMenu.job.output_assets.glb
+            ? [
+                {
+                  id: "download-glb",
+                  label: "Descargar GLB",
+                  icon: <Download className="size-3.5" />,
+                  onSelect: () => {
+                    const glbId = contextMenu.job?.output_assets.glb;
+                    if (!glbId || !contextMenu.job) return;
+                    const link = document.createElement("a");
+                    link.href = assetFileUrl(glbId);
+                    link.download = `autem_${contextMenu.job.id.slice(0, 8)}.glb`;
+                    link.click();
+                  },
+                },
+                {
+                  id: "open-scene",
+                  label: "Usar en Escena 3D",
+                  icon: <ChevronRight className="size-3.5" />,
+                  onSelect: () => {
+                    const glbId = contextMenu.job?.output_assets.glb;
+                    if (!glbId) return;
+                    window.location.href = `/scene?assetId=${encodeURIComponent(glbId)}`;
+                  },
+                },
+              ]
+            : []),
+          {
+            id: "delete-job",
+            label: "Eliminar del historial...",
+            icon: <Trash2 className="size-3.5" />,
+            danger: true,
+            dividerBefore: true,
+            onSelect: () => {
+              if (contextMenu.job) setJobPendingDelete(contextMenu.job);
+            },
+          },
+        ]
+      : [];
+
   function providerLabelById(id: string): string {
     if (id === "auto") return "Auto (con fallback)";
     return providers.find((p) => p.id === id)?.label ?? id;
   }
 
+  const availableProviders = providers.filter((p) => p.available);
+  const unavailableCount = Math.max(0, providers.length - availableProviders.length);
+
+  function providerBrandIcon(providerId: string): string | null {
+    if (providerId.startsWith("hf.")) return "/icons/providers/huggingface.svg";
+    if (providerId.startsWith("comfyui.")) return "/icons/providers/comfyui.svg";
+    if (providerId.startsWith("fal.")) return "/icons/providers/fal.svg";
+    if (providerId.startsWith("tripo.")) return "/icons/providers/tripo.svg";
+    if (providerId.startsWith("meshy.")) return "/icons/providers/meshy.svg";
+    if (providerId.startsWith("stability.")) return "/icons/providers/stability.svg";
+    if (providerId.startsWith("replicate.")) return "/icons/providers/replicate.svg";
+    return null;
+  }
+
   const selectedProviderInfo =
     selectedProvider === "auto"
-      ? providers.find((p) => p.available) ?? providers[0] ?? null
+      ? availableProviders[0] ?? providers[0] ?? null
       : providers.find((p) => p.id === selectedProvider) ?? null;
 
   const isGeneratingView =
@@ -434,6 +639,56 @@ function ImageTo3DWorkspace() {
         multiple
         className="hidden"
         onChange={(e) => void handleFiles(e.target.files, uploadedAssets.length > 0)}
+      />
+
+      <StudioContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        items={contextMenuItems}
+        onClose={() => setContextMenu(null)}
+      />
+
+      <ConfirmDeleteDialog
+        open={assetPendingDelete !== null}
+        title="¿Eliminar esta imagen?"
+        description="Puedes quitarla solo de este espacio de trabajo o eliminarla definitivamente del servidor."
+        itemName={assetPendingDelete?.filename}
+        itemMeta={
+          assetPendingDelete
+            ? `${(assetPendingDelete.size / (1024 * 1024)).toFixed(2)} MB · ${assetPendingDelete.mime.replace("image/", "").toUpperCase()}`
+            : undefined
+        }
+        previewUrl={assetPendingDelete ? `${API_URL}${assetPendingDelete.url}` : null}
+        deleting={deletingAsset}
+        secondaryLabel="Solo quitar de aquí"
+        confirmLabel="Eliminar del servidor"
+        onClose={() => {
+          if (!deletingAsset) setAssetPendingDelete(null);
+        }}
+        onSecondaryAction={handleDetachAssetOnly}
+        onConfirm={handleConfirmDeleteAsset}
+      />
+
+      <ConfirmDeleteDialog
+        open={jobPendingDelete !== null}
+        title="¿Eliminar esta generación del historial?"
+        description="Se eliminará permanentemente de tu lista de generaciones recientes."
+        itemName={jobPendingDelete ? providerLabelById(jobPendingDelete.provider_id) : undefined}
+        itemMeta={
+          jobPendingDelete
+            ? `${formatRelativeTime(jobPendingDelete.created_at)} · ID ${jobPendingDelete.id.slice(0, 8)}`
+            : undefined
+        }
+        previewUrl={
+          jobPendingDelete?.input_asset_ids[0]
+            ? assetFileUrl(jobPendingDelete.input_asset_ids[0])
+            : null
+        }
+        deleting={deletingJob}
+        confirmLabel="Eliminar del historial"
+        onClose={() => {
+          if (!deletingJob) setJobPendingDelete(null);
+        }}
+        onConfirm={handleConfirmDeleteJob}
       />
 
       {/* =====================================================================
@@ -512,9 +767,9 @@ function ImageTo3DWorkspace() {
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value="auto">Auto (con fallback)</SelectItem>
-                    {providers.map((p) => (
+                    {availableProviders.map((p) => (
                       <SelectItem key={p.id} value={p.id}>
-                        {p.label} {p.available ? "" : "(inactivo)"}
+                        {p.label}
                       </SelectItem>
                     ))}
                   </SelectGroup>
@@ -546,6 +801,8 @@ function ImageTo3DWorkspace() {
             activeJobId={null}
             providerLabelById={providerLabelById}
             onSelectJob={(job) => setActiveJob(job)}
+            onDeleteJob={(job) => setJobPendingDelete(job)}
+            onContextMenuJob={openHistoryContextMenu}
           />
         </div>
       )}
@@ -574,13 +831,28 @@ function ImageTo3DWorkspace() {
             {/* Left Column (40%): Uploaded Image Preview on Checkerboard */}
             <Card className="flex flex-col justify-between lg:col-span-5">
               <CardContent className="flex flex-col gap-4 pt-2">
-                <div className="bg-checkerboard relative aspect-square w-full overflow-hidden rounded-xl border border-border">
+                <div
+                  onContextMenu={(e) => openImageContextMenu(e, uploadedAssets[0])}
+                  className="bg-checkerboard group relative aspect-square w-full overflow-hidden rounded-xl border border-border"
+                >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={`${API_URL}${uploadedAssets[0].url}`}
                     alt={uploadedAssets[0].filename}
                     className="size-full object-contain"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setAssetPendingDelete(uploadedAssets[0])}
+                    title="Eliminar imagen"
+                    className="absolute top-3 right-3 inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-500/35 bg-[#111114]/90 px-2.5 text-xs font-medium text-rose-300 opacity-0 shadow-lg backdrop-blur-md transition hover:border-rose-500/65 hover:bg-rose-500/20 hover:text-rose-200 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" />
+                    Eliminar
+                  </button>
+                  <span className="pointer-events-none absolute bottom-2.5 left-2.5 rounded-md border border-white/10 bg-[#0A0A0B]/75 px-2 py-0.5 text-[10px] text-muted-foreground opacity-0 backdrop-blur-md transition group-hover:opacity-100">
+                    Clic derecho para más opciones
+                  </span>
                 </div>
 
                 {/* Multi-view strip if > 1 image or allow adding up to 4 views */}
@@ -589,6 +861,7 @@ function ImageTo3DWorkspace() {
                     {uploadedAssets.map((asset, idx) => (
                       <div
                         key={asset.id}
+                        onContextMenu={(e) => openImageContextMenu(e, asset)}
                         className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-secondary"
                       >
                         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -601,13 +874,11 @@ function ImageTo3DWorkspace() {
                           type="button"
                           variant="destructive"
                           size="icon-xs"
-                          onClick={() =>
-                            setUploadedAssets((prev) => prev.filter((a) => a.id !== asset.id))
-                          }
+                          onClick={() => setAssetPendingDelete(asset)}
                           className="absolute top-1 right-1 opacity-0 group-hover:opacity-100"
-                          title={`Quitar vista ${idx + 1}`}
+                          title={`Eliminar vista ${idx + 1}`}
                         >
-                          <X />
+                          <Trash2 />
                         </Button>
                       </div>
                     ))}
@@ -655,164 +926,219 @@ function ImageTo3DWorkspace() {
 
             {/* Right Column (60%): Provider Cards + Controls + CTA */}
             <div className="flex flex-col justify-between gap-6 lg:col-span-7">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-lg font-semibold">Modelo</CardTitle>
-                  <CardDescription>
-                    Selecciona un motor local (ComfyUI) o API conectada para reconstruir la malla
-                    3D.
-                  </CardDescription>
+              <Card className="border-[#232329] bg-[#111114]">
+                <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0 pb-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2.5">
+                      <CardTitle className="text-base font-semibold tracking-tight">
+                        Motor 3D disponible
+                      </CardTitle>
+                      {!loadingProviders && (
+                        <Badge className="h-5 border border-[#22C55E]/30 bg-[#22C55E]/12 px-2 font-mono text-[10px] font-medium text-[#22C55E]">
+                          {availableProviders.length} listo
+                          {availableProviders.length === 1 ? "" : "s"}
+                        </Badge>
+                      )}
+                    </div>
+                    <CardDescription className="text-xs">
+                      Solo se muestran los motores activos y listos para generar ahora mismo.
+                    </CardDescription>
+                  </div>
+
+                  {unavailableCount > 0 && (
+                    <Link
+                      href="/settings"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[#27272E] bg-[#17171B] px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground"
+                    >
+                      <span>+{unavailableCount} en Configuración</span>
+                      <ChevronRight className="size-3.5" />
+                    </Link>
+                  )}
                 </CardHeader>
 
                 <CardContent className="flex flex-col gap-5">
-                  {/* 3x2 Grid of Real Providers */}
-                  <div className="grid gap-3.5 sm:grid-cols-3">
-                    {/* Auto (con fallback) Card */}
-                    <button
-                      type="button"
-                      onClick={() => setSelectedProvider("auto")}
+                  {loadingProviders ? (
+                    <div className="grid gap-3.5 sm:grid-cols-2">
+                      {Array.from({ length: 2 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="autem-skeleton h-36 rounded-xl border border-[#232329]"
+                        />
+                      ))}
+                    </div>
+                  ) : availableProviders.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[#2A2A32] bg-[#0D0D10] p-6 text-center">
+                      <div className="flex size-10 items-center justify-center rounded-xl border border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#FFB340]">
+                        <AlertTriangle className="size-5" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-sm font-semibold text-foreground">
+                          No hay motores 3D activos
+                        </p>
+                        <p className="max-w-sm text-xs text-muted-foreground">
+                          Enciende ComfyUI local o conecta una API en Configuración para reconstruir
+                          modelos 3D.
+                        </p>
+                      </div>
+                      <Link
+                        href="/settings"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs font-semibold text-[#FF9F0A] transition hover:bg-primary/25"
+                      >
+                        Abrir Configuración
+                        <ChevronRight className="size-3.5" />
+                      </Link>
+                    </div>
+                  ) : (
+                    <div
                       className={cn(
-                        "flex flex-col justify-between rounded-xl border p-4 text-left transition-all",
-                        selectedProvider === "auto"
-                          ? "border-2 border-primary bg-primary/5"
-                          : "border-border bg-secondary/40 hover:border-muted-foreground/40"
+                        "grid gap-3.5",
+                        availableProviders.length === 1 ? "sm:grid-cols-2" : "sm:grid-cols-3"
                       )}
                     >
-                      <div className="flex flex-col gap-3">
-                        <div className="flex items-start gap-2">
-                          <Layers className="mt-0.5 size-4 shrink-0 text-foreground" />
-                          <div className="flex flex-col gap-1">
-                            <p className="text-xs font-semibold text-foreground">
-                              Auto (con fallback)
-                            </p>
-                            <Badge className="border border-[#22C55E]/30 bg-[#22C55E]/15 text-[10px] text-[#22C55E]">
+                      {/* Auto (con fallback) Card */}
+                      <button
+                        type="button"
+                        onClick={() => setSelectedProvider("auto")}
+                        className={cn(
+                          "group relative flex flex-col justify-between rounded-xl border p-4 text-left transition-all",
+                          selectedProvider === "auto"
+                            ? "border-primary bg-gradient-to-b from-primary/[0.11] to-primary/[0.03] shadow-[0_0_0_1px_rgba(249,115,22,0.35)]"
+                            : "border-[#25252B] bg-[#151519] hover:border-[#3A3A44] hover:bg-[#19191E]"
+                        )}
+                      >
+                        <div className="flex flex-col gap-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-2.5">
+                              <div
+                                className={cn(
+                                  "flex size-9 shrink-0 items-center justify-center rounded-lg border",
+                                  selectedProvider === "auto"
+                                    ? "border-primary/40 bg-primary/15 text-[#FF9F0A]"
+                                    : "border-[#2A2A32] bg-[#1C1C22] text-foreground"
+                                )}
+                              >
+                                <Layers className="size-4" />
+                              </div>
+                              <div>
+                                <p className="text-xs font-semibold text-foreground">
+                                  Auto (inteligente)
+                                </p>
+                                <p className="text-[11px] text-muted-foreground">
+                                  Usa el mejor motor listo
+                                </p>
+                              </div>
+                            </div>
+
+                            {selectedProvider === "auto" && (
+                              <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-[#0A0A0B]">
+                                <Check className="size-3 stroke-[2.8]" />
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                            <span className="inline-flex items-center gap-1 rounded-md border border-[#22C55E]/25 bg-[#22C55E]/10 px-2 py-0.5 font-medium text-[#22C55E]">
                               Recomendado
-                            </Badge>
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md border border-[#27272E] bg-[#0F0F12] px-2 py-0.5 font-mono text-muted-foreground">
+                              <Clock className="size-3" />~
+                              {selectedProviderInfo?.est_seconds ?? 3}s
+                            </span>
+                            <span className="rounded-md border border-[#27272E] bg-[#0F0F12] px-2 py-0.5 font-mono text-muted-foreground">
+                              GLB · OBJ · STL
+                            </span>
                           </div>
                         </div>
+                      </button>
 
-                        <div className="flex flex-col gap-1.5 text-xs">
-                          <div className="flex items-center justify-between text-muted-foreground">
-                            <span className="flex items-center gap-1.5">
-                              <Clock className="size-3.5" />
-                              Tiempo
-                            </span>
-                            <span className="font-mono text-foreground">
-                              ~{selectedProviderInfo?.est_seconds ?? 75} s
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between text-muted-foreground">
-                            <span className="flex items-center gap-1.5">
-                              <FileCode2 className="size-3.5" />
-                              Salida
-                            </span>
-                            <span className="font-mono text-foreground">GLB</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="mt-3 pt-1">
-                        <Badge
-                          className={cn(
-                            "h-6 px-2.5 text-[11px]",
-                            providers.some((p) => p.available)
-                              ? "border border-[#22C55E]/30 bg-[#22C55E]/15 text-[#22C55E]"
-                              : "border border-border bg-secondary text-muted-foreground"
-                          )}
-                        >
-                          {providers.some((p) => p.available) ? (
-                            <>
-                              <Check data-icon="inline-start" />
-                              Disponible
-                            </>
-                          ) : (
-                            "Configurar motor"
-                          )}
-                        </Badge>
-                      </div>
-                    </button>
-
-                    {/* Real Registered Providers from API */}
-                    {loadingProviders
-                      ? Array.from({ length: 4 }).map((_, i) => (
-                          <div
-                            key={i}
-                            className="h-44 rounded-xl border border-border bg-secondary/30"
-                          />
-                        ))
-                      : providers.map((provider) => {
-                          const selected = selectedProvider === provider.id;
-                          return (
-                            <button
-                              key={provider.id}
-                              type="button"
-                              onClick={() => setSelectedProvider(provider.id)}
-                              className={cn(
-                                "flex flex-col justify-between rounded-xl border p-4 text-left transition-all",
-                                selected
-                                  ? "border-2 border-primary bg-primary/5"
-                                  : "border-border bg-secondary/40 hover:border-muted-foreground/40"
-                              )}
-                            >
-                              <div className="flex flex-col gap-3">
-                                <div className="flex items-start gap-2">
-                                  {provider.id.includes("tripo") ? (
-                                    <Triangle className="mt-0.5 size-4 shrink-0 text-foreground" />
-                                  ) : (
-                                    <Box className="mt-0.5 size-4 shrink-0 text-foreground" />
-                                  )}
-                                  <p className="text-xs font-semibold leading-snug text-foreground">
-                                    {provider.label}
-                                  </p>
-                                </div>
-
-                                <div className="flex flex-col gap-1.5 text-xs">
-                                  <div className="flex items-center justify-between text-muted-foreground">
-                                    <span className="flex items-center gap-1.5">
-                                      <Clock className="size-3.5" />
-                                      Tiempo
-                                    </span>
-                                    <span className="font-mono text-foreground">
-                                      ~{provider.est_seconds} s
-                                    </span>
+                      {/* Only Available Registered Providers */}
+                      {availableProviders.map((provider) => {
+                        const selected = selectedProvider === provider.id;
+                        const iconSrc = providerBrandIcon(provider.id);
+                        const isFree = (provider.est_cost_usd ?? 0) === 0;
+                        return (
+                          <button
+                            key={provider.id}
+                            type="button"
+                            onClick={() => setSelectedProvider(provider.id)}
+                            className={cn(
+                              "group relative flex flex-col justify-between rounded-xl border p-4 text-left transition-all",
+                              selected
+                                ? "border-primary bg-gradient-to-b from-primary/[0.11] to-primary/[0.03] shadow-[0_0_0_1px_rgba(249,115,22,0.35)]"
+                                : "border-[#25252B] bg-[#151519] hover:border-[#3A3A44] hover:bg-[#19191E]"
+                            )}
+                          >
+                            <div className="flex flex-col gap-3">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2.5">
+                                  <div
+                                    className={cn(
+                                      "flex size-9 shrink-0 items-center justify-center rounded-lg border",
+                                      selected
+                                        ? "border-primary/40 bg-primary/15 text-[#FF9F0A]"
+                                        : "border-[#2A2A32] bg-[#1C1C22] text-foreground"
+                                    )}
+                                  >
+                                    {iconSrc ? (
+                                      // eslint-disable-next-line @next/next/no-img-element
+                                      <img
+                                        src={iconSrc}
+                                        alt={provider.label}
+                                        className="size-4 object-contain"
+                                      />
+                                    ) : provider.where === "local" ? (
+                                      <Cpu className="size-4" />
+                                    ) : provider.id.includes("tripo") ? (
+                                      <Triangle className="size-4" />
+                                    ) : (
+                                      <Box className="size-4" />
+                                    )}
                                   </div>
-                                  <div className="flex items-center justify-between text-muted-foreground">
-                                    <span className="flex items-center gap-1.5">
-                                      <FileCode2 className="size-3.5" />
-                                      Salida
-                                    </span>
-                                    <span className="font-mono text-foreground">
-                                      {(provider.outputs[0] ?? "glb").toUpperCase()}
-                                    </span>
+                                  <div className="min-w-0">
+                                    <p className="truncate text-xs font-semibold text-foreground">
+                                      {provider.label}
+                                    </p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                      {provider.where === "local"
+                                        ? "Ejecución local"
+                                        : "API Cloud conectada"}
+                                    </p>
                                   </div>
                                 </div>
+
+                                {selected && (
+                                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-[#0A0A0B]">
+                                    <Check className="size-3 stroke-[2.8]" />
+                                  </span>
+                                )}
                               </div>
 
-                              <div className="mt-3 pt-1">
-                                <Badge
+                              <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                                <span
                                   className={cn(
-                                    "h-6 px-2.5 text-[11px]",
-                                    provider.available
-                                      ? "border border-[#22C55E]/30 bg-[#22C55E]/15 text-[#22C55E]"
-                                      : "border border-border bg-secondary text-muted-foreground"
+                                    "rounded-md border px-2 py-0.5 font-mono font-medium",
+                                    isFree
+                                      ? "border-[#22C55E]/25 bg-[#22C55E]/10 text-[#22C55E]"
+                                      : "border-[#F59E0B]/30 bg-[#F59E0B]/10 text-[#FFB340]"
                                   )}
                                 >
-                                  {provider.available ? (
-                                    <>
-                                      <Check data-icon="inline-start" />
-                                      Disponible
-                                    </>
-                                  ) : provider.where === "local" ? (
-                                    "ComfyUI offline"
-                                  ) : (
-                                    "Falta key"
-                                  )}
-                                </Badge>
+                                  {isFree
+                                    ? "Gratis · $0.00"
+                                    : `$${(provider.est_cost_usd ?? 0).toFixed(2)}`}
+                                </span>
+                                <span className="inline-flex items-center gap-1 rounded-md border border-[#27272E] bg-[#0F0F12] px-2 py-0.5 font-mono text-muted-foreground">
+                                  <Clock className="size-3" />~{provider.est_seconds}s
+                                </span>
+                                <span className="rounded-md border border-[#27272E] bg-[#0F0F12] px-2 py-0.5 font-mono text-muted-foreground">
+                                  {(provider.outputs[0] ?? "glb").toUpperCase()}
+                                </span>
                               </div>
-                            </button>
-                          );
-                        })}
-                  </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
 
                   {/* Controls Sub-card: Textura PBR | Límite de polígonos | Seed */}
                   <Card size="sm" className="bg-background/60">
@@ -859,24 +1185,26 @@ function ImageTo3DWorkspace() {
                 </CardContent>
               </Card>
 
-              {/* Action Row: Secondary "Comparar modelos" + Single solid orange "Generar 3D" */}
+              {/* Action Row: Secondary "Comparar modelos" (only if 2+ active) + Single solid orange "Generar 3D" */}
               <div className="flex items-center justify-end gap-3">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="lg"
-                  disabled={submitting}
-                  onClick={() => void handleCompareModels()}
-                  className="h-12 px-5"
-                >
-                  <Columns2 data-icon="inline-start" />
-                  Comparar modelos
-                </Button>
+                {availableProviders.length >= 2 && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    disabled={submitting}
+                    onClick={() => void handleCompareModels()}
+                    className="h-12 px-5"
+                  >
+                    <Columns2 data-icon="inline-start" />
+                    Comparar modelos
+                  </Button>
+                )}
 
                 <Button
                   type="button"
                   size="lg"
-                  disabled={submitting}
+                  disabled={submitting || availableProviders.length === 0}
                   onClick={() => void handleGenerate()}
                   className="btn-primary h-12 rounded-[10px] px-7 text-sm font-semibold"
                 >
@@ -1304,6 +1632,8 @@ function ImageTo3DWorkspace() {
             activeJobId={activeJob.id}
             providerLabelById={providerLabelById}
             onSelectJob={(job) => setActiveJob(job)}
+            onDeleteJob={(job) => setJobPendingDelete(job)}
+            onContextMenuJob={openHistoryContextMenu}
           />
         </div>
       )}
@@ -1463,7 +1793,7 @@ function ImageTo3DWorkspace() {
 
 export default function ImageTo3DPage() {
   return (
-    <Suspense fallback={<AutemLoader title="Inicializando módulo 3D..." />}>
+    <Suspense fallback={null}>
       <ImageTo3DWorkspace />
     </Suspense>
   );
@@ -1474,12 +1804,18 @@ function HistoryCard({
   activeJobId,
   providerLabelById,
   onSelectJob,
+  onDeleteJob,
+  onContextMenuJob,
 }: {
   history: JobRecord[];
   activeJobId: string | null;
   providerLabelById: (id: string) => string;
   onSelectJob: (job: JobRecord) => void;
+  onDeleteJob: (job: JobRecord) => void;
+  onContextMenuJob: (e: React.MouseEvent, job: JobRecord) => void;
 }) {
+  const [brokenThumbs, setBrokenThumbs] = useState<Record<string, boolean>>({});
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -1492,7 +1828,7 @@ function HistoryCard({
             <>
               <Separator orientation="vertical" className="h-4" />
               <span className="text-xs text-muted-foreground">
-                Últimas generaciones ({history.length})
+                Últimas generaciones ({history.length}) · clic derecho para opciones
               </span>
             </>
           )}
@@ -1520,37 +1856,60 @@ function HistoryCard({
               const active = item.id === activeJobId;
               const thumbAssetId = item.input_asset_ids[0];
               return (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => onSelectJob(item)}
+                  onContextMenu={(e) => onContextMenuJob(e, item)}
                   className={cn(
-                    "group flex flex-col overflow-hidden rounded-xl border bg-background/60 p-2 text-left transition-all",
-                    active ? "border-2 border-primary" : "border-border hover:border-muted-foreground/50"
+                    "group relative flex flex-col overflow-hidden rounded-xl border bg-background/60 p-2 text-left transition-all",
+                    active
+                      ? "border-2 border-primary"
+                      : "border-border hover:border-muted-foreground/50"
                   )}
                 >
-                  <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-lg bg-secondary">
-                    {thumbAssetId ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={assetFileUrl(thumbAssetId)}
-                        alt={providerLabelById(item.provider_id)}
-                        className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
-                      />
-                    ) : (
-                      <Box className="size-6 text-muted-foreground" />
-                    )}
-                  </div>
-                  <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
-                    <span className="truncate font-medium text-foreground">
-                      {providerLabelById(item.provider_id)}
-                    </span>
-                    <span className="flex shrink-0 items-center gap-1">
-                      <Clock className="size-3" />
-                      {formatRelativeTime(item.created_at)}
-                    </span>
-                  </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => onSelectJob(item)}
+                    className="flex flex-col text-left"
+                  >
+                    <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-lg bg-secondary">
+                      {thumbAssetId && !brokenThumbs[item.id] ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={assetFileUrl(thumbAssetId)}
+                          alt={providerLabelById(item.provider_id)}
+                          onError={() =>
+                            setBrokenThumbs((prev) => ({ ...prev, [item.id]: true }))
+                          }
+                          className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <Box className="size-6 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+                      <span className="truncate font-medium text-foreground">
+                        {providerLabelById(item.provider_id)}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <Clock className="size-3" />
+                        {formatRelativeTime(item.created_at)}
+                      </span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteJob(item);
+                    }}
+                    title="Eliminar del historial"
+                    aria-label="Eliminar del historial"
+                    className="absolute top-3 right-3 flex size-7 items-center justify-center rounded-lg border border-rose-500/35 bg-[#111114]/90 text-rose-300 opacity-0 shadow-md backdrop-blur-md transition hover:border-rose-500/70 hover:bg-rose-500/20 hover:text-rose-200 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
               );
             })}
           </div>

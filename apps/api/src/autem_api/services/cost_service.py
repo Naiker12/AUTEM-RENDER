@@ -27,10 +27,40 @@ class CostService:
             else os.getenv("AUTEM_FREE_ONLY_MODE", "false").lower() == "true"
         )
         self._lock = threading.Lock()
+        self._reservations: dict[str, float] = {}
 
     @staticmethod
     def _today_prefix() -> str:
         return datetime.now(UTC).strftime("%Y-%m-%d")
+
+    def _reserved_total(self) -> float:
+        return sum(self._reservations.values())
+
+    def reserve(self, job_id: str, estimated_cost_usd: float | None) -> None:
+        """Atomically verify budget (including active reservations) and reserve estimated cost."""
+        cost = max(0.0, float(estimated_cost_usd or 0.0))
+        with self._lock:
+            if self.free_only_mode and cost > 0:
+                raise DailyCostLimitError(
+                    "Modo Solo Gratis activado: se bloqueó un proveedor de pago "
+                    f"(estimado ${cost:.2f} USD). Usa un motor gratis/local o desactiva "
+                    "el Modo Solo Gratis en Configuración."
+                )
+            spent_today = self._spent_since(self._today_prefix(), is_prefix=True)
+            reserved = self._reserved_total()
+            if cost > 0 and (spent_today + reserved + cost) > self.daily_limit_usd:
+                raise DailyCostLimitError(
+                    f"Límite diario alcanzado: gastado ${spent_today:.2f} "
+                    f"(+${reserved:.2f} en curso) / ${self.daily_limit_usd:.2f} USD "
+                    f"(estimado trabajo: ${cost:.2f} USD)."
+                )
+            if cost > 0:
+                self._reservations[job_id] = cost
+
+    def release(self, job_id: str) -> None:
+        """Release any active budget reservation when a job finishes or fails."""
+        with self._lock:
+            self._reservations.pop(job_id, None)
 
     def _spent_since(self, iso_prefix_or_cutoff: str, is_prefix: bool = False) -> float:
         if is_prefix:
@@ -57,10 +87,12 @@ class CostService:
                     "el Modo Solo Gratis en Configuración."
                 )
             spent_today = self._spent_since(self._today_prefix(), is_prefix=True)
-            if cost > 0 and (spent_today + cost) > self.daily_limit_usd:
+            reserved = self._reserved_total()
+            if cost > 0 and (spent_today + reserved + cost) > self.daily_limit_usd:
                 raise DailyCostLimitError(
-                    f"Límite diario alcanzado: gastado ${spent_today:.2f} / "
-                    f"${self.daily_limit_usd:.2f} USD (estimado trabajo: ${cost:.2f} USD)."
+                    f"Límite diario alcanzado: gastado ${spent_today:.2f} "
+                    f"(+${reserved:.2f} en curso) / ${self.daily_limit_usd:.2f} USD "
+                    f"(estimado trabajo: ${cost:.2f} USD)."
                 )
 
     def record_cost(self, cost_usd: float | None) -> None:
@@ -71,10 +103,12 @@ class CostService:
         with self._lock:
             today = self._today_prefix()
             spent_today = self._spent_since(today, is_prefix=True)
-            remaining = max(0.0, self.daily_limit_usd - spent_today)
+            reserved = self._reserved_total()
+            remaining = max(0.0, self.daily_limit_usd - spent_today - reserved)
             return {
                 "day": today,
                 "spent_today_usd": round(spent_today, 4),
+                "reserved_usd": round(reserved, 4),
                 "daily_limit_usd": round(self.daily_limit_usd, 4),
                 "remaining_usd": round(remaining, 4),
                 "free_only_mode": self.free_only_mode,

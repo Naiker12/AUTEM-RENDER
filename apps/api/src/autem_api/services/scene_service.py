@@ -186,6 +186,16 @@ class SceneService:
         )
         return token
 
+    def delete_scene(self, scene_id: str) -> None:
+        scene = self.get_scene(scene_id)
+        if scene.share_token:
+            self._db.execute(
+                "DELETE FROM scene_comments WHERE share_token = ?",
+                (scene.share_token,),
+            )
+        self._db.execute("DELETE FROM scene_views WHERE scene_id = ?", (scene.id,))
+        self._db.execute("DELETE FROM scenes WHERE id = ?", (scene.id,))
+
     def get_by_share_token(self, token: str) -> tuple[SceneEntity, list[SceneCommentEntity]]:
         row = self._db.fetchone("SELECT * FROM scenes WHERE share_token = ?", (token,))
         if not row:

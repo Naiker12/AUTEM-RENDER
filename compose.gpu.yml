@@ -1,0 +1,40 @@
+# Opcional: añade Redis + Worker GPU (RunPod / Vast.ai / equipo con NVIDIA)
+# Uso: docker compose -f docker-compose.yml -f compose.gpu.yml up -d
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: autem-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      AUTEM_INLINE_JOBS: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/worker-gpu.Dockerfile
+    container_name: autem-worker-gpu
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:

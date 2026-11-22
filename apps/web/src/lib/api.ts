@@ -1,5 +1,24 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
+function getStoredAuthHeader(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const token = window.localStorage.getItem("autem_token");
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const mergedHeaders = new Headers(init.headers ?? undefined);
+  const auth = getStoredAuthHeader();
+  if (auth.Authorization && !mergedHeaders.has("Authorization")) {
+    mergedHeaders.set("Authorization", auth.Authorization);
+  }
+  return fetch(input, { ...init, headers: mergedHeaders });
+}
+
 export interface FriendlyError {
   code: string;
   title: string;
@@ -90,14 +109,29 @@ async function unwrapResponse<T>(res: Response, fallbackTitle = "Aviso del servi
   throw new ApiClientError(parseFriendlyError(detailStr));
 }
 
-// Ultra-fast in-memory SWR cache so page transitions render in 0ms
+// Ultra-fast in-memory SWR cache + offline circuit breaker so page transitions render in 0ms
 interface CacheEntry<T> {
   data: T;
   ts: number;
 }
 const _apiCache = new Map<string, CacheEntry<unknown>>();
 const _inflight = new Map<string, Promise<unknown>>();
-const CACHE_TTL_MS = 15_000;
+const CACHE_TTL_MS = 30_000;
+const GET_TIMEOUT_MS = 650;
+let _backendOfflineUntil = 0;
+
+export function resetApiOfflineCircuit(): void {
+  _backendOfflineUntil = 0;
+}
+
+export function isApiCircuitOffline(): boolean {
+  return Date.now() < _backendOfflineUntil;
+}
+
+export function peekApiCache<T>(path: string): T | undefined {
+  const hit = _apiCache.get(path) as CacheEntry<T> | undefined;
+  return hit?.data;
+}
 
 export function invalidateApiCache(prefix?: string): void {
   if (!prefix) {
@@ -113,21 +147,38 @@ async function cachedJsonGet<T>(path: string, errorLabel: string): Promise<T> {
   const now = Date.now();
   const hit = _apiCache.get(path) as CacheEntry<T> | undefined;
 
-  const doFetch = async (): Promise<T> => {
-    try {
-      const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
-      const data = await unwrapResponse<T>(res, errorLabel);
-      _apiCache.set(path, { data, ts: Date.now() });
-      return data;
-    } catch (err) {
-      throw err instanceof ApiClientError ? err : new ApiClientError(parseFriendlyError(err));
-    }
-  };
-
   // Fresh cache hit: return instantly in 0ms
   if (hit && now - hit.ts < CACHE_TTL_MS) {
     return hit.data;
   }
+
+  // If backend was recently detected as offline, fail/fallback in 0ms instead of waiting on TCP SYN
+  if (now < _backendOfflineUntil) {
+    if (hit) return hit.data;
+    throw new ApiClientError(parseFriendlyError("failed to fetch"));
+  }
+
+  const doFetch = async (): Promise<T> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
+    try {
+      const res = await apiFetch(`${API_URL}${path}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      _backendOfflineUntil = 0;
+      const data = await unwrapResponse<T>(res, errorLabel);
+      _apiCache.set(path, { data, ts: Date.now() });
+      return data;
+    } catch (err) {
+      if (!(err instanceof ApiClientError)) {
+        _backendOfflineUntil = Date.now() + 6_000;
+      }
+      throw err instanceof ApiClientError ? err : new ApiClientError(parseFriendlyError(err));
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 
   // Deduplicate concurrent identical requests
   const existing = _inflight.get(path) as Promise<T> | undefined;
@@ -142,29 +193,32 @@ async function cachedJsonGet<T>(path: string, errorLabel: string): Promise<T> {
 
   // Stale-while-revalidate: return stale immediately while refreshing in background
   if (hit) {
-    void req.catch(() => {});
+    void req.catch(() => { });
     return hit.data;
   }
   return req;
 }
 
 export function prefetchRouteData(href: string): void {
+  if (isApiCircuitOffline()) return;
   if (href === "/settings") {
-    void fetchProviderSettings().catch(() => {});
-    void fetchProviders("").catch(() => {});
-    void fetchCostLedger().catch(() => {});
+    void fetchProviderSettings().catch(() => { });
+    void fetchProviders("").catch(() => { });
+    void fetchCostLedger().catch(() => { });
   } else if (href === "/image-to-3d") {
-    void fetchProviders("image_to_3d").catch(() => {});
-    void fetchCostSummary().catch(() => {});
+    void fetchProviders("image_to_3d").catch(() => { });
+    void fetchJobs().catch(() => { });
   } else if (href === "/render") {
-    void fetchProviders("render").catch(() => {});
+    void fetchProviders("render").catch(() => { });
+    void fetchAssets("image").catch(() => { });
   } else if (href === "/video") {
-    void fetchProviders("video").catch(() => {});
+    void fetchProviders("video").catch(() => { });
+    void fetchJobs().catch(() => { });
   } else if (href === "/projects") {
-    void fetchJobs().catch(() => {});
-    void fetchScenes().catch(() => {});
+    void fetchJobs().catch(() => { });
+    void fetchScenes().catch(() => { });
   } else if (href === "/scene") {
-    void fetchAssets("mesh").catch(() => {});
+    void fetchScenes().catch(() => { });
   }
 }
 
@@ -224,12 +278,49 @@ export interface JobRecord {
 export interface CostSummary {
   day: string;
   spent_today_usd: number;
+  reserved_usd?: number;
   daily_limit_usd: number;
   remaining_usd: number;
+  free_only_mode?: boolean;
+}
+
+export interface ProjectFolderRecord {
+  id: string;
+  name: string;
+  created_at: string;
 }
 
 export function assetFileUrl(assetId: string): string {
   return `${API_URL}/api/v1/assets/${assetId}/file`;
+}
+
+export function sceneExportHtmlUrl(sceneId: string): string {
+  return `${API_URL}/api/v1/scenes/${encodeURIComponent(sceneId)}/export-html`;
+}
+
+export async function fetchProjectFolders(): Promise<ProjectFolderRecord[]> {
+  return cachedJsonGet<ProjectFolderRecord[]>("/api/v1/projects", "Error cargando carpetas");
+}
+
+export async function createProjectFolder(name: string): Promise<ProjectFolderRecord> {
+  const res = await apiFetch(`${API_URL}/api/v1/projects`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  const data = await unwrapResponse<ProjectFolderRecord>(res, "No se pudo crear la carpeta");
+  invalidateApiCache("/api/v1/projects");
+  return data;
+}
+
+export async function deleteProjectFolder(projectId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/v1/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    await unwrapResponse<void>(res, "No se pudo eliminar la carpeta");
+  }
+  invalidateApiCache("/api/v1/projects");
 }
 
 export async function fetchProviders(kind = "image_to_3d"): Promise<ProviderInfo[]> {
@@ -244,13 +335,43 @@ export async function fetchCostSummary(): Promise<CostSummary> {
 export async function uploadImageAsset(file: File): Promise<AssetInfo> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_URL}/api/v1/assets`, {
+  const res = await apiFetch(`${API_URL}/api/v1/assets`, {
     method: "POST",
     body: form,
   });
   const data = await unwrapResponse<AssetInfo>(res, "No se pudo subir el archivo");
   invalidateApiCache("/api/v1/assets");
   return data;
+}
+
+export async function deleteAsset(assetId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/v1/assets/${encodeURIComponent(assetId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    await unwrapResponse<void>(res, "No se pudo eliminar el archivo");
+  }
+  invalidateApiCache("/api/v1/assets");
+}
+
+export async function deleteJob(jobId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/${encodeURIComponent(jobId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    await unwrapResponse<void>(res, "No se pudo eliminar la generación");
+  }
+  invalidateApiCache("/api/v1/jobs");
+}
+
+export async function deleteScene(sceneId: string): Promise<void> {
+  const res = await apiFetch(`${API_URL}/api/v1/scenes/${encodeURIComponent(sceneId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    await unwrapResponse<void>(res, "No se pudo eliminar la escena 3D");
+  }
+  invalidateApiCache("/api/v1/scenes");
 }
 
 export async function createImageTo3DJob(params: {
@@ -260,7 +381,7 @@ export async function createImageTo3DJob(params: {
   seed?: number | null;
   extra?: Record<string, unknown>;
 }): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/image-to-3d`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/image-to-3d`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -281,7 +402,7 @@ export async function compareImageTo3DJobs(params: {
   targetHeightM?: number | null;
   seed?: number | null;
 }): Promise<JobRecord[]> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/image-to-3d/compare`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/image-to-3d/compare`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -304,7 +425,7 @@ export async function createRenderJob(params: {
   providerId: string;
   seed?: number | null;
 }): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/render`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/render`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -327,7 +448,7 @@ export async function createExploreRenderJobs(params: {
   providerId: string;
   seed?: number | null;
 }): Promise<JobRecord[]> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/render/explore`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/render/explore`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -345,7 +466,7 @@ export async function createUpscaleJob(params: {
   scale?: number;
   providerId?: string;
 }): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/upscale`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/upscale`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -364,7 +485,7 @@ export async function createVideoAnimateJob(params: {
   seconds: number;
   providerId: string;
 }): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/video/animate`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/video/animate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -385,7 +506,7 @@ export async function createVideoTransitionJob(params: {
   seconds: number;
   providerId: string;
 }): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/video/transition`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/video/transition`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -433,35 +554,29 @@ export interface CommentRecord {
 }
 
 export async function fetchJobs(): Promise<JobRecord[]> {
-  const res = await fetch(`${API_URL}/api/v1/jobs`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Error cargando jobs (${res.status})`);
-  return res.json();
+  return cachedJsonGet<JobRecord[]>("/api/v1/jobs", "Error cargando trabajos");
 }
 
 export async function fetchJob(jobId: string): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/${jobId}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Error cargando job (${res.status})`);
-  return res.json();
+  return cachedJsonGet<JobRecord>(`/api/v1/jobs/${jobId}`, "Error cargando trabajo");
 }
 
 export async function cancelJob(jobId: string): Promise<JobRecord> {
-  const res = await fetch(`${API_URL}/api/v1/jobs/${jobId}/cancel`, {
+  const res = await apiFetch(`${API_URL}/api/v1/jobs/${jobId}/cancel`, {
     method: "POST",
   });
-  return unwrapResponse<JobRecord>(res, "No se pudo cancelar el trabajo");
+  const data = await unwrapResponse<JobRecord>(res, "No se pudo cancelar el trabajo");
+  invalidateApiCache("/api/v1/jobs");
+  return data;
 }
 
 export async function fetchScenes(): Promise<SceneRecord[]> {
-  const res = await fetch(`${API_URL}/api/v1/scenes`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Error cargando escenas (${res.status})`);
-  return res.json();
+  return cachedJsonGet<SceneRecord[]>("/api/v1/scenes", "Error cargando escenas");
 }
 
 export async function fetchAssets(kind?: string): Promise<AssetInfo[]> {
   const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  const res = await fetch(`${API_URL}/api/v1/assets${qs}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`Error cargando activos (${res.status})`);
-  return res.json();
+  return cachedJsonGet<AssetInfo[]>(`/api/v1/assets${qs}`, "Error cargando activos");
 }
 
 export interface CloudProviderStatus {
@@ -543,7 +658,7 @@ export async function updateProviderSettings(params: {
   daily_cost_limit_usd?: number;
   free_only_mode?: boolean;
 }): Promise<ProviderSettings> {
-  const res = await fetch(`${API_URL}/api/v1/settings/providers`, {
+  const res = await apiFetch(`${API_URL}/api/v1/settings/providers`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -554,7 +669,7 @@ export async function updateProviderSettings(params: {
 }
 
 export async function testProviderConnection(providerId: string): Promise<TestProviderResult> {
-  const res = await fetch(`${API_URL}/api/v1/settings/providers/test`, {
+  const res = await apiFetch(`${API_URL}/api/v1/settings/providers/test`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider_id: providerId }),
@@ -566,7 +681,7 @@ export async function createScene(params: {
   name: string;
   assetId?: string | null;
 }): Promise<SceneRecord> {
-  const res = await fetch(`${API_URL}/api/v1/scenes`, {
+  const res = await apiFetch(`${API_URL}/api/v1/scenes`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: params.name, asset_id: params.assetId ?? null }),
@@ -586,7 +701,7 @@ export async function addSceneView(
     lighting?: string;
   }
 ): Promise<SceneViewRecord> {
-  const res = await fetch(`${API_URL}/api/v1/scenes/${sceneId}/views`, {
+  const res = await apiFetch(`${API_URL}/api/v1/scenes/${sceneId}/views`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -606,7 +721,7 @@ export async function addSceneView(
 export async function createShareLink(
   sceneId: string
 ): Promise<{ token: string; share_path: string }> {
-  const res = await fetch(`${API_URL}/api/v1/scenes/${sceneId}/share`, { method: "POST" });
+  const res = await apiFetch(`${API_URL}/api/v1/scenes/${sceneId}/share`, { method: "POST" });
   if (!res.ok) throw new Error(`Error creando link compartido (${res.status})`);
   return res.json();
 }
@@ -614,7 +729,7 @@ export async function createShareLink(
 export async function fetchSharedScene(
   token: string
 ): Promise<{ scene: SceneRecord; comments: CommentRecord[] }> {
-  const res = await fetch(`${API_URL}/api/v1/share/${token}`, { cache: "no-store" });
+  const res = await apiFetch(`${API_URL}/api/v1/share/${token}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Link compartido no encontrado (${res.status})`);
   return res.json();
 }
@@ -623,7 +738,7 @@ export async function postSharedComment(
   token: string,
   params: { author: string; text: string; anchor: [number, number, number] }
 ): Promise<CommentRecord> {
-  const res = await fetch(`${API_URL}/api/v1/share/${token}/comments`, {
+  const res = await apiFetch(`${API_URL}/api/v1/share/${token}/comments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),

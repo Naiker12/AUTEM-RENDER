@@ -1,7 +1,12 @@
+import hmac
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
 from autem_api.api.v1.router import api_router
@@ -131,6 +136,8 @@ def _register_exception_handlers(app: FastAPI) -> None:
 
 
 def create_app() -> FastAPI:
+    repo_root = Path(__file__).resolve().parents[4]
+    load_dotenv(repo_root / ".env", override=False)
     load_dotenv(override=False)
 
     settings = get_api_settings()
@@ -142,12 +149,43 @@ def create_app() -> FastAPI:
         description="API para render arquitectónico, imagen a 3D y video con IA multi-proveedor.",
     )
     app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["localhost", "127.0.0.1", "*.localhost", "testserver"],
+    )
+    app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def optional_access_token_guard(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        expected = get_api_settings().autem_access_token.strip()
+        if (
+            expected
+            and request.method != "OPTIONS"
+            and request.url.path.startswith("/api/v1/")
+            and not request.url.path.startswith("/api/v1/health")
+            and not request.url.path.startswith("/api/v1/share/")
+        ):
+            auth_header = request.headers.get("authorization", "")
+            token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+            if not token or not hmac.compare_digest(token, expected):
+                return JSONResponse(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    content=build_error_payload(
+                        code="UNAUTHORIZED",
+                        title="Token de acceso requerido",
+                        detail="Configura Authorization: Bearer <AUTEM_ACCESS_TOKEN>.",
+                    ),
+                )
+        return await call_next(request)
+
     _register_exception_handlers(app)
     app.include_router(api_router)
     return app

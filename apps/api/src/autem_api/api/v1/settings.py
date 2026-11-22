@@ -31,8 +31,9 @@ Reg3DDep = Annotated[ProviderRegistry, Depends(get_provider_registry)]
 RegImgDep = Annotated[ImageProviderRegistry, Depends(get_image_provider_registry)]
 RegVidDep = Annotated[VideoProviderRegistry, Depends(get_video_provider_registry)]
 
-ENV_FILE = Path(".env")
-PROVIDERS_YAML = Path("config/providers.yaml")
+REPO_ROOT = Path(__file__).resolve().parents[5]
+ENV_FILE = REPO_ROOT / ".env"
+PROVIDERS_YAML = REPO_ROOT / "config" / "providers.yaml"
 
 CLOUD_PROVIDERS: list[dict[str, str]] = [
     {
@@ -374,6 +375,45 @@ def update_provider_settings(
     payload: UpdateProviderSettingsRequest,
     cost_service: CostServiceDep,
 ) -> ProviderSettingsOut:
+    import ipaddress
+    from urllib.parse import urlparse
+
+    def _sanitize_env_val(name: str, val: str) -> str:
+        if any(ch in val for ch in ("\n", "\r", "\x00")) or val.startswith("="):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Valor inválido para {name}: no se permiten saltos de línea ni control."
+                ),
+            )
+        return val
+
+    def _validate_local_url(raw: str) -> str:
+        parsed = urlparse(raw)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="La URL del motor local debe usar http:// o https:// con un host válido.",
+            )
+        if os.getenv("AUTEM_ALLOW_REMOTE_LOCAL_URLS", "").lower() in ("1", "true", "yes"):
+            return raw
+        host = parsed.hostname.lower()
+        if host in ("localhost", "127.0.0.1", "::1", "host.docker.internal"):
+            return raw
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_loopback or (ip.is_private and not ip.is_link_local):
+                return raw
+        except ValueError:
+            pass
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Host no permitido para motor local ({host}). "
+                "Usa localhost/127.0.0.1 o una IP privada de tu red local."
+            ),
+        )
+
     env_updates: dict[str, str] = {}
     cloud_map = {item["id"]: item["env_var"] for item in CLOUD_PROVIDERS}
     local_map = {item["id"]: (item["env_var"], item["default_url"]) for item in LOCAL_ENGINES}
@@ -386,7 +426,7 @@ def update_provider_settings(
         env_var = cloud_map.get(pid)
         if not env_var:
             continue
-        cleaned = raw_key.strip()
+        cleaned = _sanitize_env_val(env_var, raw_key.strip())
         if cleaned:
             os.environ[env_var] = cleaned
             env_updates[env_var] = cleaned
@@ -402,7 +442,8 @@ def update_provider_settings(
         if eid not in local_map:
             continue
         env_var, default_url = local_map[eid]
-        cleaned_url = raw_url.strip() or default_url
+        safe_url = _sanitize_env_val(env_var, raw_url.strip() or default_url)
+        cleaned_url = _validate_local_url(safe_url)
         os.environ[env_var] = cleaned_url
         env_updates[env_var] = cleaned_url
 

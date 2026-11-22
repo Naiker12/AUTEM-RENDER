@@ -9,10 +9,13 @@ import {
   Download,
   Film,
   Play,
+  Trash2,
 } from "lucide-react";
 import { cn } from "cn";
 import { AutemLoader } from "@/components/brand/autem-loader";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import { FriendlyErrorAlert } from "@/components/ui/friendly-error";
+import { StudioContextMenu, type ContextMenuItem } from "@/components/ui/studio-context-menu";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -38,13 +41,16 @@ import {
   assetFileUrl,
   createVideoAnimateJob,
   createVideoTransitionJob,
+  deleteJob,
   fetchAssets,
   fetchJobs,
   fetchProviders,
+  peekApiCache,
   type AssetInfo,
   type JobRecord,
   type ProviderInfo,
 } from "@/lib/api";
+import { toast } from "@/stores/toast-store";
 
 const MOTIONS = [
   { id: "push_in", label: "Zoom suave (Push-in)" },
@@ -58,7 +64,9 @@ function VideoWorkspace() {
   const initialJobId = searchParams.get("jobId");
 
   const [mode, setMode] = useState<"animate" | "transition">("animate");
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providers, setProviders] = useState<ProviderInfo[]>(
+    () => peekApiCache<ProviderInfo[]>("/api/v1/providers?kind=video") ?? []
+  );
   const [startAssets, setStartAssets] = useState<AssetInfo[]>([]);
   const [endAssets, setEndAssets] = useState<AssetInfo[]>([]);
   const [cameraMotion, setCameraMotion] = useState("push_in");
@@ -67,10 +75,20 @@ function VideoWorkspace() {
     "Movimiento cinematográfico de cámara arquitectónica, luz natural fluida"
   );
   const [selectedProvider, setSelectedProvider] = useState("auto");
-  const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [jobs, setJobs] = useState<JobRecord[]>(() => {
+    const cached = peekApiCache<JobRecord[]>("/api/v1/jobs") ?? [];
+    return cached.filter((j) => j.kind === "video");
+  });
   const [activeJobId, setActiveJobId] = useState<string | null>(initialJobId);
   const [submitting, setSubmitting] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    job: JobRecord;
+  } | null>(null);
+  const [jobPendingDelete, setJobPendingDelete] = useState<JobRecord | null>(null);
+  const [deletingJob, setDeletingJob] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -146,6 +164,66 @@ function VideoWorkspace() {
       setSubmitting(false);
     }
   }
+
+  async function handleDeleteVideoJob() {
+    if (!jobPendingDelete) return;
+    const target = jobPendingDelete;
+    setDeletingJob(true);
+    try {
+      await deleteJob(target.id);
+      setJobs((prev) => prev.filter((j) => j.id !== target.id));
+      if (activeJobId === target.id) setActiveJobId(null);
+      setJobPendingDelete(null);
+      toast.success({
+        title: "Clip eliminado",
+        description: "Se quitó del historial permanentemente.",
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar el clip",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeletingJob(false);
+    }
+  }
+
+  const contextMenuItems: ContextMenuItem[] = contextMenu
+    ? [
+        {
+          id: "play",
+          label: "Reproducir clip",
+          icon: <Play className="size-3.5" />,
+          onSelect: () => setActiveJobId(contextMenu.job.id),
+        },
+        ...(contextMenu.job.output_assets.mp4 || contextMenu.job.output_assets.webp
+          ? [
+              {
+                id: "download",
+                label: "Descargar video",
+                icon: <Download className="size-3.5" />,
+                onSelect: () => {
+                  const id =
+                    contextMenu.job.output_assets.mp4 ?? contextMenu.job.output_assets.webp;
+                  if (!id) return;
+                  const link = document.createElement("a");
+                  link.href = assetFileUrl(id);
+                  link.download = `autem_video_${contextMenu.job.id.slice(0, 8)}`;
+                  link.click();
+                },
+              },
+            ]
+          : []),
+        {
+          id: "delete",
+          label: "Eliminar clip...",
+          icon: <Trash2 className="size-3.5" />,
+          danger: true,
+          dividerBefore: true,
+          onSelect: () => setJobPendingDelete(contextMenu.job),
+        },
+      ]
+    : [];
 
   const activeJob = jobs.find((j) => j.id === activeJobId) ?? jobs[0] ?? null;
   const mp4AssetId = activeJob?.output_assets.mp4 ?? null;
@@ -401,12 +479,16 @@ function VideoWorkspace() {
                   key={item.id}
                   size="sm"
                   onClick={() => setActiveJobId(item.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ x: e.clientX, y: e.clientY, job: item });
+                  }}
                   className={cn(
-                    "cursor-pointer transition",
+                    "group relative cursor-pointer transition",
                     activeJob?.id === item.id && "ring-2 ring-primary"
                   )}
                 >
-                  <CardContent>
+                  <CardContent className="pr-8">
                     <p className="truncate text-xs font-medium text-foreground">
                       {String(item.params.label ?? item.provider_id)}
                     </p>
@@ -414,19 +496,60 @@ function VideoWorkspace() {
                       {item.message}
                     </p>
                   </CardContent>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setJobPendingDelete(item);
+                    }}
+                    title="Eliminar clip"
+                    aria-label="Eliminar clip"
+                    className="absolute top-2.5 right-2.5 flex size-6 items-center justify-center rounded-md border border-rose-500/35 bg-[#111114]/90 text-rose-300 opacity-0 transition hover:border-rose-500/70 hover:bg-rose-500/20 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-3" />
+                  </button>
                 </Card>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      <StudioContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        items={contextMenuItems}
+        onClose={() => setContextMenu(null)}
+      />
+
+      <ConfirmDeleteDialog
+        open={jobPendingDelete !== null}
+        title="¿Eliminar este clip de video?"
+        description="Se eliminará permanentemente de tu historial de videos."
+        itemName={
+          jobPendingDelete
+            ? String(jobPendingDelete.params.label ?? jobPendingDelete.provider_id)
+            : undefined
+        }
+        itemMeta={jobPendingDelete ? `ID ${jobPendingDelete.id.slice(0, 8)}` : undefined}
+        previewUrl={
+          jobPendingDelete?.input_asset_ids[0]
+            ? assetFileUrl(jobPendingDelete.input_asset_ids[0])
+            : null
+        }
+        deleting={deletingJob}
+        confirmLabel="Eliminar clip"
+        onClose={() => {
+          if (!deletingJob) setJobPendingDelete(null);
+        }}
+        onConfirm={handleDeleteVideoJob}
+      />
     </div>
   );
 }
 
 export default function VideoPage() {
   return (
-    <Suspense fallback={<AutemLoader title="Inicializando estudio de Video..." />}>
+    <Suspense fallback={null}>
       <VideoWorkspace />
     </Suspense>
   );

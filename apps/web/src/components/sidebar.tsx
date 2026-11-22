@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { Box, Clapperboard, Folder, Image as ImageIcon, Layers3, Settings } from "lucide-react";
 import { cn } from "cn";
 import { AutemLogo } from "@/components/brand/autem-logo";
@@ -16,8 +17,23 @@ const NAV_ITEMS = [
   { href: "/video", label: "Video", icon: Clapperboard },
 ];
 
+const ALL_ROUTES = ["/projects", "/image-to-3d", "/render", "/scene", "/video", "/settings"];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  // Pre-compile and prefetch all routes in the background right after mount so tab switching is 0ms
+  useEffect(() => {
+    const timers = ALL_ROUTES.map((route, idx) =>
+      window.setTimeout(() => {
+        router.prefetch(route);
+      }, 120 + idx * 140)
+    );
+    return () => {
+      for (const t of timers) window.clearTimeout(t);
+    };
+  }, [router]);
 
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-3 py-5">

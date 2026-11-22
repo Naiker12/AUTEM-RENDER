@@ -25,6 +25,7 @@ apps/web/tsconfig.tsbuildinfo
 
 # Storage / temp / local state
 tmp/
+data/
 *.glb
 *.obj
 *.stl

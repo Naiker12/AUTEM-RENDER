@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Box,
   Clapperboard,
+  ExternalLink,
   Folder,
   Image as ImageIcon,
   Layers3,
@@ -16,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-delete-dialog";
 import {
   Dialog,
   DialogContent,
@@ -36,13 +38,23 @@ import {
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StudioContextMenu, type ContextMenuItem } from "@/components/ui/studio-context-menu";
 import {
   assetFileUrl,
+  createProjectFolder,
+  deleteJob,
+  deleteProjectFolder,
+  deleteScene,
   fetchJobs,
+  fetchProjectFolders,
   fetchScenes,
+  isApiCircuitOffline,
+  peekApiCache,
   type JobRecord,
+  type ProjectFolderRecord,
   type SceneRecord,
 } from "@/lib/api";
+import { toast } from "@/stores/toast-store";
 
 interface FolderRecord {
   id: string;
@@ -60,7 +72,57 @@ interface RealProjectCard {
   status: string;
 }
 
-const FOLDERS_STORAGE_KEY = "autem_render_folders_v1";
+function mapJobsAndScenesToCards(
+  jobs: JobRecord[],
+  scenes: SceneRecord[]
+): RealProjectCard[] {
+  const mappedJobs: RealProjectCard[] = jobs.map((job) => {
+    const is3D = job.kind === "image_to_3d";
+    const isVideo = job.kind === "video";
+    const thumbId =
+      job.output_assets.png ??
+      job.output_assets.webp ??
+      job.input_asset_ids[0] ??
+      null;
+
+    return {
+      id: job.id,
+      title: String(
+        job.params.label ??
+          (is3D
+            ? `Modelo 3D · ${job.provider_id}`
+            : isVideo
+              ? `Video · ${job.provider_id}`
+              : `Render · ${job.provider_id}`)
+      ),
+      kind: is3D ? "3D" : isVideo ? "Video" : "Render",
+      href: is3D
+        ? `/image-to-3d?jobId=${encodeURIComponent(job.id)}`
+        : isVideo
+          ? `/video?jobId=${encodeURIComponent(job.id)}`
+          : `/render?jobId=${encodeURIComponent(job.id)}`,
+      thumbUrl: thumbId ? assetFileUrl(thumbId) : null,
+      createdAt: job.created_at,
+      status: job.status,
+    };
+  });
+
+  const mappedScenes: RealProjectCard[] = scenes.map((scene) => ({
+    id: scene.id,
+    title: scene.name,
+    kind: "Escena 3D",
+    href: `/scene?sceneId=${encodeURIComponent(scene.id)}`,
+    thumbUrl: scene.views[0]?.thumbnail_asset_id
+      ? assetFileUrl(scene.views[0].thumbnail_asset_id)
+      : null,
+    createdAt: scene.created_at,
+    status: "succeeded",
+  }));
+
+  return [...mappedScenes, ...mappedJobs].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+}
 
 function formatRelativeTime(isoDate: string): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - new Date(isoDate).getTime()) / 1000));
@@ -78,76 +140,44 @@ export default function ProjectsPage() {
   const [newFolderName, setNewFolderName] = useState("");
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
 
-  const [projects, setProjects] = useState<RealProjectCard[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [projects, setProjects] = useState<RealProjectCard[]>(() => {
+    const cachedJobs = peekApiCache<JobRecord[]>("/api/v1/jobs") ?? [];
+    const cachedScenes = peekApiCache<SceneRecord[]>("/api/v1/scenes") ?? [];
+    return mapJobsAndScenesToCards(cachedJobs, cachedScenes);
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    const hasCache =
+      peekApiCache("/api/v1/jobs") !== undefined ||
+      peekApiCache("/api/v1/scenes") !== undefined;
+    return !hasCache && !isApiCircuitOffline();
+  });
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sortAsc, setSortAsc] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    project?: RealProjectCard;
+    folder?: FolderRecord;
+  } | null>(null);
+  const [projectPendingDelete, setProjectPendingDelete] = useState<RealProjectCard | null>(null);
+  const [folderPendingDelete, setFolderPendingDelete] = useState<FolderRecord | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [brokenThumbs, setBrokenThumbs] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(FOLDERS_STORAGE_KEY);
-      if (raw) {
-        setFolders(JSON.parse(raw));
-      }
-    } catch {
-      // Ignore storage error
-    }
-
     let mounted = true;
     Promise.all([
       fetchJobs().catch(() => [] as JobRecord[]),
       fetchScenes().catch(() => [] as SceneRecord[]),
+      fetchProjectFolders().catch(() => [] as ProjectFolderRecord[]),
     ])
-      .then(([jobs, scenes]) => {
+      .then(([jobs, scenes, serverFolders]) => {
         if (!mounted) return;
-        const mappedJobs: RealProjectCard[] = jobs.map((job) => {
-          const is3D = job.kind === "image_to_3d";
-          const isVideo = job.kind === "video";
-          const thumbId =
-            job.output_assets.png ??
-            job.output_assets.webp ??
-            job.input_asset_ids[0] ??
-            null;
-
-          return {
-            id: job.id,
-            title: String(
-              job.params.label ??
-                (is3D
-                  ? `Modelo 3D · ${job.provider_id}`
-                  : isVideo
-                    ? `Video · ${job.provider_id}`
-                    : `Render · ${job.provider_id}`)
-            ),
-            kind: is3D ? "3D" : isVideo ? "Video" : "Render",
-            href: is3D
-              ? `/image-to-3d?jobId=${encodeURIComponent(job.id)}`
-              : isVideo
-                ? `/video?jobId=${encodeURIComponent(job.id)}`
-                : `/render?jobId=${encodeURIComponent(job.id)}`,
-            thumbUrl: thumbId ? assetFileUrl(thumbId) : null,
-            createdAt: job.created_at,
-            status: job.status,
-          };
-        });
-
-        const mappedScenes: RealProjectCard[] = scenes.map((scene) => ({
-          id: scene.id,
-          title: scene.name,
-          kind: "Escena 3D",
-          href: `/scene?sceneId=${encodeURIComponent(scene.id)}`,
-          thumbUrl: scene.views[0]?.thumbnail_asset_id
-            ? assetFileUrl(scene.views[0].thumbnail_asset_id)
-            : null,
-          createdAt: scene.created_at,
-          status: "succeeded",
-        }));
-
-        const combined = [...mappedScenes, ...mappedJobs].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        setProjects(mapJobsAndScenesToCards(jobs, scenes));
+        setFolders(
+          serverFolders.map((f) => ({ id: f.id, name: f.name, createdAt: f.created_at }))
         );
-        setProjects(combined);
       })
       .finally(() => {
         if (mounted) setLoading(false);
@@ -158,31 +188,120 @@ export default function ProjectsPage() {
     };
   }, []);
 
-  function saveFolders(next: FolderRecord[]) {
-    setFolders(next);
-    try {
-      localStorage.setItem(FOLDERS_STORAGE_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage error
-    }
-  }
-
-  function handleCreateFolder(e: React.FormEvent) {
+  async function handleCreateFolder(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = newFolderName.trim();
     if (!trimmed) return;
-    const next: FolderRecord[] = [
-      ...folders,
-      { id: `folder-${Date.now()}`, name: trimmed, createdAt: new Date().toISOString() },
-    ];
-    saveFolders(next);
-    setNewFolderName("");
-    setFolderDialogOpen(false);
+    try {
+      const created = await createProjectFolder(trimmed);
+      setFolders((prev) => [
+        { id: created.id, name: created.name, createdAt: created.created_at },
+        ...prev,
+      ]);
+      setNewFolderName("");
+      setFolderDialogOpen(false);
+      toast.success({
+        title: "Carpeta creada",
+        description: `"${created.name}" guardada en el servidor.`,
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo crear la carpeta",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    }
   }
 
-  function handleDeleteFolder(id: string) {
-    saveFolders(folders.filter((f) => f.id !== id));
+  async function handleDeleteFolderConfirmed() {
+    if (!folderPendingDelete) return;
+    const target = folderPendingDelete;
+    setDeleting(true);
+    try {
+      await deleteProjectFolder(target.id);
+      setFolders((prev) => prev.filter((f) => f.id !== target.id));
+      setFolderPendingDelete(null);
+      toast.success({
+        title: "Carpeta eliminada",
+        description: `Se eliminó la carpeta "${target.name}".`,
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar la carpeta",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeleting(false);
+    }
   }
+
+  async function handleDeleteProjectConfirmed() {
+    if (!projectPendingDelete) return;
+    const target = projectPendingDelete;
+    setDeleting(true);
+    try {
+      if (target.kind === "Escena 3D") {
+        await deleteScene(target.id);
+      } else {
+        await deleteJob(target.id);
+      }
+      setProjects((prev) => prev.filter((p) => p.id !== target.id));
+      setProjectPendingDelete(null);
+      toast.success({
+        title: "Proyecto eliminado",
+        description: `"${target.title}" se eliminó permanentemente.`,
+      });
+    } catch (err) {
+      toast.error({
+        title: "No se pudo eliminar",
+        description: err instanceof Error ? err.message : "Inténtalo nuevamente.",
+      });
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const contextMenuItems: ContextMenuItem[] = contextMenu?.project
+    ? [
+        {
+          id: "open",
+          label: `Abrir ${contextMenu.project.kind}`,
+          icon: <ExternalLink className="size-3.5" />,
+          onSelect: () => {
+            if (contextMenu.project) window.location.href = contextMenu.project.href;
+          },
+        },
+        {
+          id: "open-tab",
+          label: "Abrir en nueva pestaña",
+          icon: <ExternalLink className="size-3.5" />,
+          onSelect: () => {
+            if (contextMenu.project) window.open(contextMenu.project.href, "_blank");
+          },
+        },
+        {
+          id: "delete-project",
+          label: "Eliminar proyecto...",
+          icon: <Trash2 className="size-3.5" />,
+          danger: true,
+          dividerBefore: true,
+          onSelect: () => {
+            if (contextMenu.project) setProjectPendingDelete(contextMenu.project);
+          },
+        },
+      ]
+    : contextMenu?.folder
+      ? [
+          {
+            id: "delete-folder",
+            label: "Eliminar carpeta...",
+            icon: <Trash2 className="size-3.5" />,
+            danger: true,
+            onSelect: () => {
+              if (contextMenu.folder) setFolderPendingDelete(contextMenu.folder);
+            },
+          },
+        ]
+      : [];
 
   const filteredProjects = projects.filter((p) =>
     p.title.toLowerCase().includes(query.toLowerCase())
@@ -247,7 +366,14 @@ export default function ProjectsPage() {
 
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {folders.map((folder) => (
-            <Card key={folder.id} className="flex flex-row items-center justify-between p-4">
+            <Card
+              key={folder.id}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setContextMenu({ x: e.clientX, y: e.clientY, folder });
+              }}
+              className="flex flex-row items-center justify-between p-4"
+            >
               <div className="flex items-center gap-3.5">
                 <div className="flex size-11 items-center justify-center rounded-lg bg-secondary text-foreground">
                   <Folder className="size-5" />
@@ -264,10 +390,10 @@ export default function ProjectsPage() {
                 type="button"
                 variant="ghost"
                 size="icon-sm"
-                onClick={() => handleDeleteFolder(folder.id)}
+                onClick={() => setFolderPendingDelete(folder)}
                 title="Eliminar carpeta"
               >
-                <Trash2 className="text-muted-foreground" />
+                <Trash2 className="text-muted-foreground hover:text-rose-400" />
               </Button>
             </Card>
           ))}
@@ -348,61 +474,122 @@ export default function ProjectsPage() {
         ) : (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
             {displayedProjects.map((project) => (
-              <Link key={project.id} href={project.href} className="group">
-                <Card className="h-full transition-all group-hover:-translate-y-0.5 group-hover:ring-muted-foreground/40">
-                  <CardHeader className="pb-0">
-                    <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-secondary">
-                      {project.thumbUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={project.thumbUrl}
-                          alt={project.title}
-                          className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        />
-                      ) : project.kind === "3D" ? (
-                        <Box className="size-8 text-muted-foreground" />
-                      ) : project.kind === "Escena 3D" ? (
-                        <Layers3 className="size-8 text-muted-foreground" />
-                      ) : project.kind === "Video" ? (
-                        <Clapperboard className="size-8 text-muted-foreground" />
-                      ) : (
-                        <ImageIcon className="size-8 text-muted-foreground" />
-                      )}
-                    </div>
-                  </CardHeader>
-
-                  <CardContent className="flex flex-col gap-3">
-                    <CardTitle className="truncate text-base font-bold">
-                      {project.title}
-                    </CardTitle>
-
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline" className="gap-1.5">
-                          {project.kind === "3D" ? (
-                            <Box data-icon="inline-start" />
-                          ) : project.kind === "Escena 3D" ? (
-                            <Layers3 data-icon="inline-start" />
-                          ) : project.kind === "Video" ? (
-                            <Clapperboard data-icon="inline-start" />
-                          ) : (
-                            <ImageIcon data-icon="inline-start" />
-                          )}
-                          {project.kind}
-                        </Badge>
-                        <Separator orientation="vertical" className="h-3.5" />
-                        <span className="text-xs text-muted-foreground">
-                          {formatRelativeTime(project.createdAt)}
-                        </span>
+              <div
+                key={project.id}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({ x: e.clientX, y: e.clientY, project });
+                }}
+                className="group relative"
+              >
+                <Link href={project.href} className="block h-full">
+                  <Card className="h-full transition-all group-hover:-translate-y-0.5 group-hover:ring-muted-foreground/40">
+                    <CardHeader className="pb-0">
+                      <div className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-secondary">
+                        {project.thumbUrl && !brokenThumbs[project.id] ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={project.thumbUrl}
+                            alt={project.title}
+                            onError={() =>
+                              setBrokenThumbs((prev) => ({ ...prev, [project.id]: true }))
+                            }
+                            className="size-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                        ) : project.kind === "3D" ? (
+                          <Box className="size-8 text-muted-foreground" />
+                        ) : project.kind === "Escena 3D" ? (
+                          <Layers3 className="size-8 text-muted-foreground" />
+                        ) : project.kind === "Video" ? (
+                          <Clapperboard className="size-8 text-muted-foreground" />
+                        ) : (
+                          <ImageIcon className="size-8 text-muted-foreground" />
+                        )}
                       </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                    </CardHeader>
+
+                    <CardContent className="flex flex-col gap-3">
+                      <CardTitle className="truncate text-base font-bold">
+                        {project.title}
+                      </CardTitle>
+
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="gap-1.5">
+                            {project.kind === "3D" ? (
+                              <Box data-icon="inline-start" />
+                            ) : project.kind === "Escena 3D" ? (
+                              <Layers3 data-icon="inline-start" />
+                            ) : project.kind === "Video" ? (
+                              <Clapperboard data-icon="inline-start" />
+                            ) : (
+                              <ImageIcon data-icon="inline-start" />
+                            )}
+                            {project.kind}
+                          </Badge>
+                          <Separator orientation="vertical" className="h-3.5" />
+                          <span className="text-xs text-muted-foreground">
+                            {formatRelativeTime(project.createdAt)}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setProjectPendingDelete(project);
+                  }}
+                  title="Eliminar proyecto"
+                  aria-label="Eliminar proyecto"
+                  className="absolute top-3 right-3 z-10 flex size-8 items-center justify-center rounded-lg border border-rose-500/35 bg-[#111114]/90 text-rose-300 opacity-0 shadow-md backdrop-blur-md transition hover:border-rose-500/70 hover:bg-rose-500/20 hover:text-rose-200 group-hover:opacity-100"
+                >
+                  <Trash2 className="size-3.5" />
+                </button>
+              </div>
             ))}
           </div>
         )}
       </section>
+
+      <StudioContextMenu
+        position={contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null}
+        items={contextMenuItems}
+        onClose={() => setContextMenu(null)}
+      />
+
+      <ConfirmDeleteDialog
+        open={projectPendingDelete !== null}
+        title={`¿Eliminar ${projectPendingDelete?.kind ?? "proyecto"}?`}
+        description="Se eliminará permanentemente de tu espacio de trabajo."
+        itemName={projectPendingDelete?.title}
+        itemMeta={
+          projectPendingDelete
+            ? `${projectPendingDelete.kind} · ${formatRelativeTime(projectPendingDelete.createdAt)}`
+            : undefined
+        }
+        previewUrl={projectPendingDelete?.thumbUrl}
+        deleting={deleting}
+        confirmLabel="Eliminar definitivamente"
+        onClose={() => {
+          if (!deleting) setProjectPendingDelete(null);
+        }}
+        onConfirm={handleDeleteProjectConfirmed}
+      />
+
+      <ConfirmDeleteDialog
+        open={folderPendingDelete !== null}
+        title="¿Eliminar esta carpeta?"
+        description="La carpeta se eliminará de tu lista (tus proyectos seguirán disponibles)."
+        itemName={folderPendingDelete?.name}
+        confirmLabel="Eliminar carpeta"
+        onClose={() => setFolderPendingDelete(null)}
+        onConfirm={handleDeleteFolderConfirmed}
+      />
     </div>
   );
 }

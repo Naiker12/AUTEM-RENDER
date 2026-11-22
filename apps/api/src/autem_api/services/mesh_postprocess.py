@@ -43,7 +43,7 @@ def postprocess_mesh(
         min_y = float(min_pt[1])
         scene.apply_translation([-center_x, -min_y, -center_z])
 
-    # Compute mesh statistics and optionally decimate if face_limit is set
+    # Compute mesh statistics, ensure smooth vertex normals, and optionally decimate
     vertex_count = 0
     face_count = 0
     for name, geom in list(scene.geometry.items()):
@@ -54,6 +54,8 @@ def postprocess_mesh(
                     scene.geometry[name] = geom
                 except Exception:
                     pass
+            # Force computation of vertex normals so GLB export includes NORMAL accessor
+            _ = geom.vertex_normals
             vertex_count += int(len(geom.vertices))
             face_count += int(len(geom.faces))
 
@@ -75,7 +77,7 @@ def postprocess_mesh(
         fmt_lower = fmt.lower()
         dest = output_dir / f"model.{fmt_lower}"
         if fmt_lower == "glb":
-            data = scene.export(file_type="glb")
+            data = scene.export(file_type="glb", include_normals=True)
             dest.write_bytes(data if isinstance(data, bytes) else bytes(data))
             exports["glb"] = dest
         elif fmt_lower in ("obj", "stl") and merged is not None:

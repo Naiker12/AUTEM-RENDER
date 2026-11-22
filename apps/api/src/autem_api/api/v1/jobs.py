@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 
 from autem_api.deps import get_cost_service, get_job_service
 from autem_api.domain.entities import JobEntity
-from autem_api.domain.errors import JobNotFoundError, ProviderUnavailableError
-from autem_api.services.cost_service import CostService, DailyCostLimitError
+from autem_api.domain.errors import JobNotFoundError
+from autem_api.services.cost_service import CostService
 from autem_api.services.job_service import JobService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -20,7 +20,6 @@ CostServiceDep = Annotated[CostService, Depends(get_cost_service)]
 
 class CreateImageTo3DJobRequest(BaseModel):
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
-    image_paths: list[str] = Field(default_factory=list)
     provider_id: str = Field(default="auto")
     seed: int | None = Field(default=None)
     target_height_m: float | None = Field(default=None, gt=0.1, le=500.0)
@@ -30,7 +29,6 @@ class CreateImageTo3DJobRequest(BaseModel):
 
 class CompareImageTo3DRequest(BaseModel):
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
-    image_paths: list[str] = Field(default_factory=list)
     provider_ids: list[str] = Field(min_length=2, max_length=4)
     seed: int | None = Field(default=42)
     target_height_m: float | None = Field(default=None, gt=0.1, le=500.0)
@@ -139,26 +137,14 @@ def create_image_to_3d_job(
     payload: CreateImageTo3DJobRequest,
     service: JobServiceDep,
 ) -> JobOut:
-    try:
-        job = service.create_image_to_3d_job(
-            asset_ids=payload.asset_ids,
-            image_paths=payload.image_paths,
-            provider_id=payload.provider_id,
-            seed=payload.seed,
-            target_height_m=payload.target_height_m,
-            export_formats=payload.export_formats,
-            extra=payload.extra,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    job = service.create_image_to_3d_job(
+        asset_ids=payload.asset_ids,
+        provider_id=payload.provider_id,
+        seed=payload.seed,
+        target_height_m=payload.target_height_m,
+        export_formats=payload.export_formats,
+        extra=payload.extra,
+    )
     return JobOut.from_entity(job)
 
 
@@ -171,24 +157,12 @@ def compare_image_to_3d_jobs(
     payload: CompareImageTo3DRequest,
     service: JobServiceDep,
 ) -> list[JobOut]:
-    try:
-        jobs = service.compare_image_to_3d_jobs(
-            provider_ids=payload.provider_ids,
-            asset_ids=payload.asset_ids,
-            image_paths=payload.image_paths,
-            seed=payload.seed,
-            target_height_m=payload.target_height_m,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    jobs = service.compare_image_to_3d_jobs(
+        provider_ids=payload.provider_ids,
+        asset_ids=payload.asset_ids,
+        seed=payload.seed,
+        target_height_m=payload.target_height_m,
+    )
     return [JobOut.from_entity(job) for job in jobs]
 
 
@@ -197,28 +171,17 @@ def create_render_job(
     payload: CreateRenderJobRequest,
     service: JobServiceDep,
 ) -> JobOut:
-    try:
-        job = service.create_render_job(
-            asset_id=payload.asset_id,
-            prompt=payload.prompt,
-            style=payload.style,
-            material=payload.material,
-            lighting=payload.lighting,
-            resolution=payload.resolution,
-            strength=payload.strength,
-            provider_id=payload.provider_id,
-            seed=payload.seed,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    job = service.create_render_job(
+        asset_id=payload.asset_id,
+        prompt=payload.prompt,
+        style=payload.style,
+        material=payload.material,
+        lighting=payload.lighting,
+        resolution=payload.resolution,
+        strength=payload.strength,
+        provider_id=payload.provider_id,
+        seed=payload.seed,
+    )
     return JobOut.from_entity(job)
 
 
@@ -227,23 +190,12 @@ def explore_renders(
     payload: ExploreRenderRequest,
     service: JobServiceDep,
 ) -> list[JobOut]:
-    try:
-        jobs = service.create_explore_jobs(
-            asset_id=payload.asset_id,
-            prompt=payload.prompt,
-            provider_id=payload.provider_id,
-            seed=payload.seed,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    jobs = service.create_explore_jobs(
+        asset_id=payload.asset_id,
+        prompt=payload.prompt,
+        provider_id=payload.provider_id,
+        seed=payload.seed,
+    )
     return [JobOut.from_entity(job) for job in jobs]
 
 
@@ -260,16 +212,6 @@ def create_upscale_job(
         )
     except JobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
     return JobOut.from_entity(job)
 
 
@@ -278,26 +220,15 @@ def create_video_animate_job(
     payload: VideoAnimateRequest,
     service: JobServiceDep,
 ) -> JobOut:
-    try:
-        job = service.create_video_job(
-            mode="animate",
-            start_asset_id=payload.asset_id,
-            prompt=payload.prompt,
-            camera_motion=payload.camera_motion,
-            seconds=payload.seconds,
-            provider_id=payload.provider_id,
-            seed=payload.seed,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    job = service.create_video_job(
+        mode="animate",
+        start_asset_id=payload.asset_id,
+        prompt=payload.prompt,
+        camera_motion=payload.camera_motion,
+        seconds=payload.seconds,
+        provider_id=payload.provider_id,
+        seed=payload.seed,
+    )
     return JobOut.from_entity(job)
 
 
@@ -306,26 +237,15 @@ def create_video_transition_job(
     payload: VideoTransitionRequest,
     service: JobServiceDep,
 ) -> JobOut:
-    try:
-        job = service.create_video_job(
-            mode="transition",
-            start_asset_id=payload.start_asset_id,
-            end_asset_id=payload.end_asset_id,
-            prompt=payload.prompt,
-            seconds=payload.seconds,
-            provider_id=payload.provider_id,
-            seed=payload.seed,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except ProviderUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-        ) from exc
-    except DailyCostLimitError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)
-        ) from exc
+    job = service.create_video_job(
+        mode="transition",
+        start_asset_id=payload.start_asset_id,
+        end_asset_id=payload.end_asset_id,
+        prompt=payload.prompt,
+        seconds=payload.seconds,
+        provider_id=payload.provider_id,
+        seed=payload.seed,
+    )
     return JobOut.from_entity(job)
 
 
@@ -341,6 +261,14 @@ def get_job(job_id: str, service: JobServiceDep) -> JobOut:
 def cancel_job(job_id: str, service: JobServiceDep) -> JobOut:
     try:
         return JobOut.from_entity(service.cancel_job(job_id))
+    except JobNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(job_id: str, service: JobServiceDep) -> None:
+    try:
+        service.delete_job(job_id)
     except JobNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 

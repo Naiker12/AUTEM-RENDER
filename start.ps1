@@ -5,7 +5,7 @@ Write-Host "Compilando frontend optimizado (Next.js)..." -ForegroundColor Cyan
 pnpm --dir apps/web build
 
 Write-Host "Iniciando Autem Render API en http://localhost:8000 ..." -ForegroundColor Cyan
-$api = Start-Process -FilePath "uv" -ArgumentList "run", "uvicorn", "autem_api.main:app", "--host", "0.0.0.0", "--port", "8000" -PassThru -NoNewWindow
+$api = Start-Process -FilePath "uv" -ArgumentList "run", "uvicorn", "autem_api.main:app", "--host", "127.0.0.1", "--port", "8000" -PassThru -NoNewWindow
 
 Write-Host "Iniciando Autem Render Web (producción rápida) en http://localhost:3000 ..." -ForegroundColor Green
 try {

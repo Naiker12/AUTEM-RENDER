@@ -1,3 +1,4 @@
+import os
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -7,6 +8,9 @@ from typing import Any
 
 from autem_api.domain.enums import AssetKind
 from autem_api.storage.sqlite_store import SqliteStateStore
+
+REPO_ROOT = Path(__file__).resolve().parents[5]
+DEFAULT_STORAGE_DIR = REPO_ROOT / "data" / "storage"
 
 
 @dataclass
@@ -26,10 +30,11 @@ class LocalAssetStore:
 
     def __init__(
         self,
-        root_dir: Path = Path("tmp/storage"),
+        root_dir: Path | None = None,
         db: SqliteStateStore | None = None,
     ) -> None:
-        self.root_dir = root_dir
+        env_dir = os.environ.get("AUTEM_STORAGE_DIR")
+        self.root_dir = root_dir or (Path(env_dir) if env_dir else DEFAULT_STORAGE_DIR)
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._db = db or SqliteStateStore()
 
@@ -125,3 +130,12 @@ class LocalAssetStore:
     def list_all(self) -> list[AssetRecord]:
         rows = self._db.fetchall("SELECT * FROM assets ORDER BY created_at DESC")
         return [self._row_to_record(r) for r in rows]
+
+    def delete(self, asset_id: str) -> bool:
+        record = self.get(asset_id)
+        if not record:
+            return False
+        if record.path.exists() and record.path.is_file():
+            record.path.unlink(missing_ok=True)
+        self._db.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+        return True

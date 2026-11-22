@@ -32,12 +32,18 @@ export function AutemLoader({
     >
       <div
         className={cn(
-          "relative flex items-center justify-center rounded-2xl border border-border bg-[#0E0E11] shadow-inner",
+          "relative flex items-center justify-center rounded-2xl border border-[#27272E] bg-[#0D0D10] shadow-[0_12px_36px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.04)]",
           compact ? "size-20" : "size-28"
         )}
       >
+        {/* Subtle architectural corner ticks */}
+        <span className="pointer-events-none absolute top-1.5 left-1.5 size-2 rounded-tl border-t border-l border-primary/50" />
+        <span className="pointer-events-none absolute top-1.5 right-1.5 size-2 rounded-tr border-t border-r border-primary/50" />
+        <span className="pointer-events-none absolute bottom-1.5 left-1.5 size-2 rounded-bl border-b border-l border-primary/50" />
+        <span className="pointer-events-none absolute right-1.5 bottom-1.5 size-2 rounded-br border-r border-b border-primary/50" />
+
         {/* Ambient radial orange pulse */}
-        <div className="pointer-events-none absolute inset-2 animate-pulse rounded-xl bg-primary/10 blur-md" />
+        <div className="pointer-events-none absolute inset-2 animate-pulse rounded-xl bg-primary/12 blur-md" />
 
         <svg
           viewBox="0 0 120 120"
@@ -88,12 +94,12 @@ export function AutemLoader({
             className="animate-[pulse_1.8s_ease-in-out_infinite]"
           />
 
-          {/* Animated vertical laser scan plane */}
-          <g className="animate-[bounce_2.2s_ ease-in-out_infinite]">
+          {/* Smooth vertical architectural laser scan plane */}
+          <g style={{ animation: "autem-scan 2.2s ease-in-out infinite" }}>
             <polygon
               points="60,34 98,53 60,72 22,53"
               fill="#F97316"
-              fillOpacity="0.18"
+              fillOpacity="0.2"
               stroke="#FFB340"
               strokeWidth="1.5"
             />
@@ -108,7 +114,7 @@ export function AutemLoader({
         </svg>
 
         {typeof progress === "number" && (
-          <span className="absolute -bottom-2.5 rounded-full border border-primary/50 bg-background px-2 py-0.5 font-mono text-[10px] font-semibold text-primary shadow-sm">
+          <span className="absolute -bottom-2.5 rounded-full border border-primary/50 bg-[#0A0A0B] px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#FF9F0A] shadow-md">
             {Math.round(progress)}%
           </span>
         )}

@@ -4,6 +4,7 @@
 image_to_3d:
   default_order:
     - comfyui.trellis2
+    - hf.hunyuan3d-2
     - stability.sf3d
     - tripo.direct
     - fal.fal-ai/trellis-2

@@ -4,16 +4,13 @@ from autem_core.config import CoreSettings
 
 
 class ApiSettings(CoreSettings):
-    api_host: str = "0.0.0.0"
+    api_host: str = "127.0.0.1"
     api_port: int = 8000
     cors_origins: str = "http://localhost:3000"
-    # En desarrollo sin Docker/Redis, ejecuta el pipeline en background local.
-    # Cambia a false cuando levantes Redis + Celery worker.
+    # En modo local de un solo usuario, ejecuta el pipeline en background con tope de concurrencia.
     autem_inline_jobs: bool = True
-    # Auth JWT y cifrado de API keys (activa autem_require_auth=true en producción)
-    autem_require_auth: bool = False
-    jwt_secret: str = "change-me-in-production-autem-render-secret-key-32bytes"
-    jwt_expire_minutes: int = 60 * 24 * 7  # 7 días
+    # Token opcional para uso remoto (túnel / GPU remota). Vacío = modo local sin login.
+    autem_access_token: str = ""
     storage_backend: str = "local"  # "local" | "s3"
 
     @property

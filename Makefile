@@ -1,24 +1,22 @@
-.PHONY: infra-up infra-down dev-api dev-worker dev-web test lint
+.PHONY: up down dev-api dev-web test lint
 
-infra-up:
-	docker compose up -d
+up:
+	docker compose up -d --build
 
-infra-down:
+down:
 	docker compose down
 
 dev-api:
-	uv run --package autem-api uvicorn autem_api.main:app --reload --host 0.0.0.0 --port 8000
-
-dev-worker:
-	uv run --package autem-worker celery -A autem_worker.celery_app:celery_app worker --loglevel=info --pool=solo
+	uv run uvicorn autem_api.main:app --reload --reload-dir apps/api/src --reload-dir packages/providers/src --reload-dir packages/core/src --host 127.0.0.1 --port 8000
 
 dev-web:
 	pnpm --dir apps/web dev
 
 test:
-	uv run pytest
+	uv run pytest -v
 
 lint:
 	uv run ruff check .
 	uv run mypy packages apps/api/src apps/worker/src
+	pnpm --dir apps/web typecheck
 	pnpm --dir apps/web lint

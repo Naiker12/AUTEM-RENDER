@@ -3,9 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { ChevronRight, Home, RefreshCw } from "lucide-react";
+import { ChevronRight, Home, RefreshCw, ShieldCheck, Wallet } from "lucide-react";
 import { cn } from "cn";
-import { API_URL } from "@/lib/api";
+import {
+  API_URL,
+  fetchCostSummary,
+  resetApiOfflineCircuit,
+  type CostSummary,
+} from "@/lib/api";
 
 const ROUTE_TITLES: Record<string, string> = {
   "/projects": "Proyectos",
@@ -19,20 +24,28 @@ const ROUTE_TITLES: Record<string, string> = {
 export function TopBar() {
   const pathname = usePathname();
   const [apiState, setApiState] = useState<"checking" | "online" | "offline">("checking");
+  const [costSummary, setCostSummary] = useState<CostSummary | null>(null);
   const currentTitle = ROUTE_TITLES[pathname] ?? "Imagen a 3D";
   const isProjectsRoot = pathname === "/projects";
 
   function checkApiHealth() {
+    resetApiOfflineCircuit();
     setApiState("checking");
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 800);
+    const timer = setTimeout(() => controller.abort(), 650);
 
     fetch(`${API_URL}/api/v1/health`, {
       cache: "no-store",
       signal: controller.signal,
     })
       .then((res) => {
-        setApiState(res.ok ? "online" : "offline");
+        const ok = res.ok;
+        setApiState(ok ? "online" : "offline");
+        if (ok) {
+          fetchCostSummary()
+            .then((summary) => setCostSummary(summary))
+            .catch(() => {});
+        }
       })
       .catch(() => {
         setApiState("offline");
@@ -83,8 +96,35 @@ export function TopBar() {
         )}
       </nav>
 
-      {/* Top-right sleek architectural engine status pill */}
+      {/* Top-right daily spend chip + engine status pill */}
       <div className="flex items-center gap-2.5">
+        {apiState === "online" && costSummary && (
+          <Link
+            href="/settings"
+            title="Ver presupuesto y contabilidad de gastos"
+            className="hidden h-8 items-center gap-2 rounded-full border border-border bg-card px-3 font-mono text-[11px] text-muted-foreground transition hover:border-primary/40 hover:text-foreground sm:inline-flex"
+          >
+            {costSummary.free_only_mode ? (
+              <>
+                <ShieldCheck className="size-3.5 text-[#22C55E]" />
+                <span className="text-[#22C55E]">Solo Gratis</span>
+                <span>· $0.00</span>
+              </>
+            ) : (
+              <>
+                <Wallet className="size-3.5 text-primary" />
+                <span>
+                  Hoy{" "}
+                  <strong className="font-semibold text-foreground">
+                    ${costSummary.spent_today_usd.toFixed(2)}
+                  </strong>{" "}
+                  / ${costSummary.daily_limit_usd.toFixed(2)}
+                </span>
+              </>
+            )}
+          </Link>
+        )}
+
         <div className="inline-flex h-8 items-center gap-2.5 rounded-full border border-border bg-card px-3 text-xs shadow-2xs">
           {/* Mini isometric architectural cube icon in top bar */}
           <svg
